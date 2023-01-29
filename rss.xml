@@ -17,7 +17,7 @@ But first things first. The base conversion is the part of PasswordMaker Pro (an
 </p>
 <ul>
 	<li>The first character of each password-part has a higher probability to be from the beginning of the list of allowed characters. That is because the size of the hash is typically not a power of the length of the list of password characters. I don't think this can be exploited, but I'm not sure and from a gut feeling I would have preferred if the most significant digit would have been ignored.</li>
-	<li>The second consequence is about performance. The usual algorithm to convert between bases yields the least significant digit first. This means, in order to get the most significant digit the whole number needs to be converted first, and the result needs to be collected in order to allow reversing it.</li>
+	<li>The second consequence is about performance. The usual algorithm to convert between bases yields the least significant digit first. This means, in order to get the most significant digit the whole number needs to be converted first, and the result needs to be collected into a buffer in order to allow reversing it.</li>
 </ul>
 <p>
 As a reminder, the usual formula to convert a number from base A to base B using arthmetic in base A is to repeatedly divide it by that base, and to note the remainders until the quotient is zero. Reading the remainders in reverse yields the desired number. As an example, let's convert the number 12345 to hexadecimal.
@@ -225,8 +225,8 @@ Under the (quite justified) assumption that multiplication is faster than divisi
 	<li>Find the highest power of the base that fits into the input's data type. This is the starting value for the divisor. Also store the exponent plus one, as it is the number of digits of the result.</li>
 	<li>Divide the dividend by the divisor. The quotient is the first digit of the result.</li>
 	<li>The remainder is the new value of the dividend.</li>
-	<li>Divide the previous divisor by the base. This is the new divisor</li>
-	<li>Divide the dividend by the divisor. The quotient is the next digit of the result</li>
+	<li>Divide the previous divisor by the base. This is the new divisor.</li>
+	<li>Divide the dividend by the divisor. The quotient is the next digit of the result.</li>
 	<li>Take the remainder and multiply it by the base. This is the new dividend.</li>
 	<li>Repeat steps 6 and 7 until the number of digits computed in step 2 has been returned.</li>
 </ol>
@@ -237,7 +237,7 @@ The first division of the divisor by the base (step 5) is required to avoid over
 Even though this modification means that the number of digits in the division (step 7) does not decrease over time, the overall performance improved a lot on the tested hardware.
 </p>
 <p>
-Let's go through the example of convertin 12345 to hexadecimal one last time, with this modified algorithm. For simplicity let's assume our data type can store decimal values up to 5 digits, so the largest value is 99999.
+Let's go through the example of converting 12345 to hexadecimal one last time, with this modified algorithm. For simplicity let's assume our data type can store decimal values up to 5 digits, so the largest value is 99999.
 </p>
 <ul>
 	<li>The starting value for the dividend is 12345.</li>
