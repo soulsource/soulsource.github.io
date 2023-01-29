@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>Andi&apos;s Blog</title><link>https://www.grois.info</link><description>Blog that&apos;s mostly about tech stuff, but also random rambling</description><item><title>The maths behind passwordmaker-rs-0.2</title><link>https://www.grois.info/posts/2023-01/2023-01-29-the-maths-behind-passwordmaker-rs-0-2.xhtml</link><description><![CDATA[<h2 id="what-is-new">What is new in version 0.2?</h2>
+<p>
+From a user's perspective not much has changed between versions 0.1 and 0.2. The API is unchanged, and unless there is a bug, the output is the same too. This of course raises the question what actually changed between the two versions.
+</p>
+<p>
+The short answer is "performance".
+</p>
+<p>
+Of course that's not the only change. Apart from the performance changes there were also significant improvements to the code quality and the test coverage improved greatly. The performance changes also led to the introduction of feature flags that can be enabled to improve performance at the cost of increased binary size.
+</p>
+<h2 id="base-conversion-0.1">Base conversion in 0.1</h2>
+<p>
+This blog is about the biggest change with respect to performance, namely the rewrite of the base conversion code. To understand why it was rewritten, you need to know what version 0.1 did in order to convert between different bases.
+</p>
+<p>
+But first things first. The base conversion is the part of PasswordMaker Pro (and therefore also of passwordmaker-rs) that maps the hash value which gets generated from the user's input onto the list of characters that the user allows to have in the generated password. PasswordMaker Pro chose to do this in a mathematically correct way, meaning that the most significant digit of the converted number determines the first character in the generated password (or password-part if the mapped hash is shorter than the desired password-length). This has two consequences:
+</p>
+<ul>
+	<li>The first character of each password-part has a higher probability to be from the beginning of the list of allowed characters. That is because the size of the hash is typically not a power of the length of the list of password characters. I don't think this can be exploited, but I'm not sure and from a gut feeling I would have preferred if the most significant digit would have been ignored.</li>
+	<li>The second consequence is about performance. The usual algorithm to convert between bases yields the least significant digit first. This means, in order to get the most significant digit the whole number needs to be converted first, and the result needs to be collected in order to allow reversing it.</li>
+</ul>
+<p>
+As a reminder, the usual formula to convert a number from base A to base B using arthmetic in base A is to repeatedly divide it by that base, and to note the remainders until the quotient is zero. Reading the remainders in reverse yields the desired number. As an example, let's convert the number 12345 to hexadecimal.
+</p>
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block">
+<mtable>
+	<mtr>
+	<mtd><mfrac><mn>12345</mn><mn>16</mn></mfrac></mtd>
+	<mtd><mo>=</mo></mtd>
+	<mtd><mn>771</mn></mtd>
+	<mtd><mo>+</mo></mtd>
+	<mtd><mfrac><mn>9</mn><mn>16</mn></mfrac></mtd>
+	</mtr>
+	<mtr>
+	<mtd><mfrac><mn>771</mn><mn>16</mn></mfrac></mtd>
+	<mtd><mo>=</mo></mtd>
+	<mtd><mn>48</mn></mtd>
+	<mtd><mo>+</mo></mtd>
+	<mtd><mfrac><mn>3</mn><mn>16</mn></mfrac></mtd>
+	</mtr>
+	<mtr>
+	<mtd><mfrac><mn>48</mn><mn>16</mn></mfrac></mtd>
+	<mtd><mo>=</mo></mtd>
+	<mtd><mn>3</mn></mtd>
+	<mtd><mo>+</mo></mtd>
+	<mtd><mfrac><mn>0</mn><mn>16</mn></mfrac></mtd>
+	</mtr>
+	<mtr>
+	<mtd><mfrac><mn>3</mn><mn>16</mn></mfrac></mtd>
+	<mtd><mo>=</mo></mtd>
+	<mtd><mn>0</mn></mtd>
+	<mtd><mo>+</mo></mtd>
+	<mtd><mfrac><mn>3</mn><mn>16</mn></mfrac></mtd>
+	</mtr>
+</mtable>
+</math>
+<p>
+The remainders, read from bottom to top, are 0x3039. However, if we would only have cared for the first two digits of that number, we still would have had to complete the whole conversion. Now, in the case of cryptographic hashes the numbers are much larger, of course. The smallest hashes supported by PasswordMaker Pro are 16&nbsp;bytes long.
+</p>
+<p>
+By default, PasswordMaker Pro uses 94 characters for password generation. With a 16&nbsp;bytes hash this yields 20 characters per password-part. Typical user passwords are probably about half that length. For larger hashes an even lower fraction of the generated digits is used. 20&nbsp;bytes yield 25 characters, 32&nbsp; yield 40 per password-part. In addition, the converted number's digits need to be stored, and in the worst case this can mean storing 256&nbsp;digits. Since the digits of base conversion are used as indices into a user-supplied array, they can, depending on user input, go up to <code>&lt;usize&gt;::MAX</code>. In other words, the 256&nbsp;digits case would take 2&nbsp;kibibytes of memory, what is a significant portion of the L1 cache even on modern CPUs.
+</p>
+<h2 id="goals-for-base-conversion-in-0.2">Goals for the base conversion in 0.2</h2>
+<p>
+While this obviously is not a big issue for normal use cases of passwordmaker-rs, it still annoyed me that the library is doing work that's then thrown away... So I decided to try to optimize this code. This left me with the most important question though: How? Knowing how it should not work, makes the goals for an improvement rather obvious:
+</p>
+<ul>
+	<li> The only real way to be able to skip allocating the buffer is to implement the base conversion such that it generates the digits in the order that they are needed in, starting with the most significant digit.</li>
+	<li>It would also be nice to implement this in the form of an iterator, so that taking only the desired number of characters would allow the computation to early-out.</li>
+	<li>Since any reformulation will likely increase the complexity of the code, a slight performance regression in worst-case scenarios is acceptable, but only under the condition that typical user inputs see a significant improvement.</li>
+</ul>
+<h2 id="base-conversion-starting-at-most-significant-digit">Base conversion starting at most significant digit</h2>
+<p>
+The idea for the alternative algorithm comes from the inverse operation of the base conversion presented above. To convert from base A to base B using base B arithmetics, one has to start at the most significant digit, multiply it by the base, add the next digit, multiply the result by the base, add the next digit, multiply, add, and so on and so forth. For the example shown above, this would read:<br/>
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block">
+<mrow>
+	<mo>(</mo>
+	<mrow>
+		<mo>(</mo>
+		<mrow>
+			<mo>(</mo>
+			<mrow>
+				<mo>(</mo>
+				<mn>3</mn>
+				<mo>)</mo>
+			</mrow>
+			<mo>&#x22C5;<!-- ⋅ --></mo>
+			<mn>16</mn>
+			<mo>)</mo>
+		</mrow>
+		<mo>+</mo>
+		<mn>0</mn>
+		<mo>)</mo>
+	</mrow>
+	<mo>&#x22C5;<!-- ⋅ --></mo>
+	<mn>16</mn>
+	<mo>+</mo>
+	<mn>3</mn>
+	<mo>)</mo>
+</mrow>
+<mo>&#x22C5;<!-- ⋅ --></mo>
+<mn>16</mn>
+<mo>+</mo>
+<mn>9</mn>
+<mo>=</mo>
+<mn>12345</mn>
+</math>
+</p>
+<p>
+The same formula can be rewritten by expanding the multiplications (<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>b</mi></math> denotes the base, <math xmlns="http://www.w3.org/1998/Math/MathML"><msub><mi>d</mi><mi>i</mi></msub></math> denotes the i'th digit, where <math xmlns="http://www.w3.org/1998/Math/MathML"><msub><mi>d</mi><mn>0</mn></msub></math> is the least significant digit.):
+</p>
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block">
+<munderover>
+<mo>&#x2211;<!-- ∑ --></mo>
+<mrow>
+<mi>i</mi>
+<mo>=</mo>
+<mn>0</mn>
+</mrow>
+<mrow>
+<mi>N</mi>
+</mrow>
+</munderover>
+<msup>
+<mi>b</mi>
+<mi>i</mi>
+</msup>
+<mo>&#x22C5;<!-- ⋅ --></mo>
+<msub>
+<mi>d</mi>
+<mi>i</mi>
+</msub>
+</math>
+<p>
+For the example this would read:
+</p>
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block">
+<mn>3</mn>
+<mo>&#x22C5;<!-- ⋅ --></mo>
+<msup>
+<mn>16</mn>
+<mn>3</mn>
+</msup>
+<mo>+</mo>
+<mn>0</mn>
+<mo>&#x22C5;<!-- ⋅ --></mo>
+<msup>
+<mn>16</mn>
+<mn>2</mn>
+</msup>
+<mo>+</mo>
+<mn>3</mn>
+<mo>&#x22C5;<!-- ⋅ --></mo>
+<msup>
+<mn>16</mn>
+<mn>1</mn>
+</msup>
+<mo>+</mo>
+<mn>9</mn>
+<mo>&#x22C5;<!-- ⋅ --></mo>
+<msup>
+<mn>16</mn>
+<mn>0</mn>
+</msup>
+<mo>=</mo>
+<mn>12345</mn>
+</math>
+<p>
+Based on this formula, it's straightforward to formulate the desired algorithm:
+</p>
+<ol>
+	<li>The input is the starting value for the dividend.</li>
+	<li>Find the highest power of the base that is still smaller or equal to the input. This is the starting value for the divisor.</li>
+	<li>Divide the dividend by the divisor. The quotient is the next digit of the result.</li>
+	<li>The remainder is the new value for the dividend.</li>
+	<li>Divide the previous divisor by the base. This is the new divisor.</li>
+	<li>Repeat steps 3-5 until the divisor is equal to 0.</li>
+</ol>
+<p>
+Let's go through our example again, and convert 12345 to hexadecimal using this algorithm.
+</p>
+<ul>
+	<li>The starting dividend is 12345.</li>
+	<li>The highest power of 16 that's equal to or smaller than 12345 is 4096 (<math xmlns="http://www.w3.org/1998/Math/MathML"><msup><mn>16</mn><mn>3</mn></msup></math>).</li>
+	<li>
+		<math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>12345</mn><mn>4096</mn></mfrac><mo>=</mo><mn>3</mn><mo>+</mo><mfrac><mn>57</mn><mn>4096</mn></mfrac></math>, so our first digit is <em>3</em>.
+	</li>
+	<li>The remainder was 57. This is our new dividend.</li>
+	<li>The new divisor is given by <math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>4096</mn><mn>16</mn></mfrac><mo>=</mo><mn>256</mn></math>.</li>
+	<li><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>57</mn><mn>256</mn></mfrac><mo>=</mo><mn>0</mn><mo>+</mo><mfrac><mn>57</mn><mn>256</mn></mfrac></math>, so our second digit is <em>0</em>.</li>
+	<li>The remainder was 57 (again). This is our new dividend.</li>
+	<li>The new divisor is given by <math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>256</mn><mn>16</mn></mfrac><mo>=</mo><mn>16</mn></math>.</li>
+	<li><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>57</mn><mn>16</mn></mfrac><mo>=</mo><mn>3</mn><mo>+</mo><mfrac><mn>9</mn><mn>16</mn></mfrac></math>, so our third digit is <em>3</em>.</li>
+	<li>The remeinader was 9. This is our new dividend.</li>
+	<li>The new divisor is given by <math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>16</mn><mn>16</mn></mfrac><mo>=</mo><mn>1</mn></math>.</li>
+	<li><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>9</mn><mn>1</mn></mfrac><mo>=</mo><mn>9</mn><mo>+</mo><mfrac><mn>0</mn><mn>1</mn></mfrac></math>, so our fourth digit is <em>9</em>.</li>
+	<li>The remainder was 0. This would be the new dividend.</li>
+	<li>However we don't need it any more, because <math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>1</mn><mn>16</mn></mfrac><mo>=</mo><mn>0</mn><mo>+</mo><mfrac><mn>1</mn><mn>16</mn></mfrac></math>, so our next divisor would be zero. This indicates that the conversion is complete.</li>
+</ul>
+<p>
+As expected, we have reached the same result as above, 0x3039, but this time starting at the most significant bit.
+</p>
+<h2 id="implementation-in-passwordmaker-rs">Implementation in passwordmaker-rs</h2>
+<p>
+For the hashes that fit into <code>u128</code> the implementation is straightforward, using the arithmetics defined for this data type. It would be tempting to use the <code>num_bigint</code> crate for the bigger hashes, but that crate uses heap allocations, because it cannot make assumptions about the size of the data stored in the <code>BigInt</code> type. The size of the hashes used in passwordmaker-rs is known at compile time, so it is quite tempting to use a stack-allocated <code>Sized</code> type instead.
+</p>
+<p>
+To make this possible, arithmetic for numbers of 20 and 32 bytes has been implemented, using a positional notation with a base of <math xmlns="http://www.w3.org/1998/Math/MathML"><msup><mn>2</mn><mrow><mn>32</mn></mrow></msup></math>. For multiplication the school method was used, and division has been implemented following <cite>Donald E. Knuth, The Art of Computer Programming, Vol. 2, Section 4.3, Algorithm D.</cite>. This is the same algorithm that <code>BigInt</code> uses.
+</p>
+<h3 id="optimizations">Optimizations</h3>
+<p>
+While the above works, it is not particularly fast. Having to find the highest power of the base that fits into the input takes time, and dividing the divisor by the base between each iteration is not optimal either.
+</p>
+<p>
+The search for the highest power of the base that fits into the input can be sped up by increasing the power quadratically instead of linearly, and only switching back to linear search for the last few steps.
+</p>
+<p>
+The search can be skipped altogether though. The chance that the highest power of the base that fits into the input's data type is the same as the largest one that fits the input value is rather high, and even if not, any leading zeros can just be skipped. What this means is that instead of doing a search at runtime, one can precompute the highest fitting powers for various possible bases, and trade a bit of binary size for quite a significant gain in performance. Of course it's not feasible to precompute this for all possible values of <code>usize</code>, but at least for values the users are expected to use. The runtime search is used as a fallback, in case a base that has not been precomputed is required. In passwordmaker-rs the number of precomputed values can be tweaked with feature flags.
+</p>
+<p>
+Under the (quite justified) assumption that multiplication is faster than division, the algorithm for base conversion can be modified:
+</p>
+<ol>
+	<li>The input is the starting value for the dividend.</li>
+	<li>Find the highest power of the base that fits into the input's data type. This is the starting value for the divisor. Also store the exponent plus one, as it is the number of digits of the result.</li>
+	<li>Divide the dividend by the divisor. The quotient is the first digit of the result.</li>
+	<li>The remainder is the new value of the dividend.</li>
+	<li>Divide the previous divisor by the base. This is the new divisor</li>
+	<li>Divide the dividend by the divisor. The quotient is the next digit of the result</li>
+	<li>Take the remainder and multiply it by the base. This is the new dividend.</li>
+	<li>Repeat steps 6 and 7 until the number of digits computed in step 2 has been returned.</li>
+</ol>
+<p>
+The first division of the divisor by the base (step 5) is required to avoid overflow.
+</p>
+<p>
+Even though this modification means that the number of digits in the division (step 7) does not decrease over time, the overall performance improved a lot on the tested hardware.
+</p>
+<p>
+Let's go through the example of convertin 12345 to hexadecimal one last time, with this modified algorithm. For simplicity let's assume our data type can store decimal values up to 5 digits, so the largest value is 99999.
+</p>
+<ul>
+	<li>The starting value for the dividend is 12345.</li>
+	<li>Since our example data type goes up to 99999, the highest power of 16 we can fit into it is <math xmlns="http://www.w3.org/1998/Math/MathML"><msup><mn>16</mn><mn>4</mn></msup><mo>=</mo><mn>65536</mn></math>. This means that our output will have <math xmlns="http://www.w3.org/1998/Math/MathML"><mn>4</mn><mo>+</mo><mn>1</mn><mo>=</mo><mn>5</mn></math> digits, and that 65536 will be our first divisor.</li>
+	<li><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>12345</mn><mn>65536</mn></mfrac><mo>=</mo><mn>0</mn><mo>+</mo><mfrac><mn>12345</mn><mn>65536</mn></mfrac></math> means that our first digit is <em>0</em>. Leading zeros are unlikely in practice because a good hash has a 50% chance for each bit of the output to be 1.</li>
+	<li>The remainder is 12345. This is our new dividend.</li>
+	<li>The new divisor is given by <math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>65536</mn><mn>16</mn></mfrac><mo>=</mo><mn>4096</mn></math>.</li>
+	<li><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>12345</mn><mn>4096</mn></mfrac><mo>=</mo><mn>3</mn><mo>+</mo><mfrac><mn>57</mn><mn>4096</mn></mfrac></math>, so the second digit is <em>3</em></li>
+	<li>We now leave the divisor unchanged, and rather multiply the remainder by the base to get the new dividend: <math xmlns="http://www.w3.org/1998/Math/MathML"><mn>57</mn><mo>·</mo><mn>16</mn><mo>=</mo><mn>912</mn></math>.</li>
+	<li><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>912</mn><mn>4096</mn></mfrac><mo>=</mo><mn>0</mn><mo>+</mo><mfrac><mn>912</mn><mn>4096</mn></mfrac></math>, so the third digit is <em>0</em>.</li>
+	<li>The next dividend is <math xmlns="http://www.w3.org/1998/Math/MathML"><mn>912</mn><mo>·</mo><mn>16</mn><mo>=</mo><mn>14592</mn></math>.</li>
+	<li><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>14592</mn><mn>4096</mn></mfrac><mo>=</mo><mn>3</mn><mo>+</mo><mfrac><mn>2304</mn><mn>4096</mn></mfrac></math>, so the fourth digit is <em>3</em>.</li>
+	<li>The next dividend is <math xmlns="http://www.w3.org/1998/Math/MathML"><mn>2304</mn><mo>·</mo><mn>16</mn><mo>=</mo><mn>36864</mn></math>.</li>
+	<li><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mn>36864</mn><mn>4096</mn></mfrac><mo>=</mo><mn>9</mn><mo>+</mo><mfrac><mn>0</mn><mn>4096</mn></mfrac></math>, so our fifth and final digit is <em>9</em>.</li>
+</ul>
+<p>
+Again we reached our desired value of 0x03039. The leading zero can easily be skipped, for instance by using the <code>std::iter::Iterator::skip_while&lt;P&gt;(self, predicate: P)</code> method.
+</p>
+<p>
+One thing that is worth noting is that it might look tempting to change the condition for conversion completion from pre-determining the number of digits to "if the dividend is zero", but that would be <em>wrong</em> in cases where there are trailing zeros.
+</p>
+<h2 id="results">Results</h2>
+<p>
+The benchmarks were performed with a target-basis of 94 and hard-coded hash values. The numbers posted here are recorded on an AMD Ryzen 1700X processor.
+For the exact input parameters of the benchmarks, please check the <a href="https://github.com/soulsource/passwordmaker-rs/tree/v0.2.1/benches">benchmark source code</a> (beware, the parameters labelled &quot;worst case&quot; in the source code are worst case for version 0.1 - the worst case for version 0.2 is labelled &quot;full divide&quot;).
+</p>
+<h3>Typical</h3>
+<p>
+For a &quot;typical&quot; password length of 12 characters, all hash lengths show a clear improvement over version 0.1:
+</p>
+<ul>
+	<li>For 16 byte hashes the performance improved by approximately 45%.</li>
+	<li>For 20 byte hashes the performance improved by approximately 30%.</li>
+	<li>For 32 byte hashes the performance improved by approximately 50%.</li>
+</ul>
+<h3>Worst case</h3>
+<p>
+However, for worst case scenarios, in which all digits of the result are required (20 for 16 bytes, 25 for 20 bytes, and 40 for 32 bytes), the results are not that great:
+</p>
+<ul>
+	<li>For 16 byte hashes the performance improved by approximately 30%.</li>
+	<li>For 20 byte hashes the performance got worse by approximately 10%.</li>
+	<li>For 32 byte hashes the performance got worse by approximately 10%.</li>
+</ul>
+<p>
+It is worth noting that for even longer passwords the relative performance of version 0.2 compared to 0.1 improves again. Due to this and the very significant improvement for typical password lengths, I still consider version 0.2 a huge improvement over 0.1. Also, most users will likely use the default hash algorithm, which has 16 byte hashes and gains performance even in the worst case scenario.
+</p>
+<p>
+The actual gains/losses in performance depend on the user's hardware though.
+I don't have the numbers any more, but I also profiled the code on a Raspberry Pi and on that slower hardware the performance of version 0.2 easily outperformed version 0.1 for all possible input parameters. I won't reproduce this right now though, because compilation on the Raspberry Pi takes several hours.
+</p>
+<h2 id="plans-for-the-future">Plans for the future</h2>
+<p>
+The choice of <code>u32</code> as the base of the number sytem in which the arithmetic is implemented was mostly based on gut feeling. The division algorithm from <acronym title="The Art of Computer Programming">TAOCP</acronym> requires an error-correction step which is less likely to be required the larger the base is. In addition, 32 is the greatest common divisor of 160 and 256, so it's equally suited for both hash sizes. It would be worth investigating how switching to <code>u64</code> or <code>u8</code> affects performance.
+</p>
+<p>
+There is likely still optimization potential in the arithmetic functions. It is for instance not clear why the normalization step in the division function takes as long as it does. Possibly those functions can still be reformulated to reduce their CPU time costs.
+</p>
+]]></description><guid>https://www.grois.info/posts/2023-01/2023-01-29-the-maths-behind-passwordmaker-rs-0-2.xhtml</guid><pubDate>Sun, 29 Jan 2023 00:00:00 +0000</pubDate></item><item><title>Why is this blog so ugly?</title><link>https://www.grois.info/posts/2023-01/2023-01-29-why-is-this-blog-so-ugly.xhtml</link><description><![CDATA[<p>
+That's because this website doesn't use any page-level style sheet. Most of the <acronym title="Extensible Hypertext Markup Language">XHTML</acronym> is also written by hand.
+</p>
+<p>
+There are several reasons for this, and I would lie if I said that me being lazy wouldn't have played a role. However, the most important reason is that I wanted to make a statement, namely that I don't think that most modern websites are particularly well designed. They might be beautiful, but that's only a small part of a website's user experience. Other important parts of the <acronym title="user experience">UX</acronym> are that the website's content can be navigated easily, that the information the viewer wants to see is easy to find and presented in a readable way, that there are no distractions from the content, that the website loads fast, that it can be accessed on a Braille terminal,&#8230;  Those aspects are where too many modern websites are lacking.
+</p>
+<p>
+The lack of (almost) all custom design, with a focus on the text content, is meant to contrast this sad trend.
+</p>
+<h2 id="browser-settings">Browser settings</h2>
+<p>
+Most browsers have settings that allow to customize colours and fonts used by websites without a style sheet. In Mozilla Firefox, for instance, you can find the settings for default colour and font in the &quot;General&quot; category in the browser's preferences, under &quot;Language and Appearance&quot;.
+</p>
+<p>
+A word of warning though: Many websites supply incomplete style sheets. They assume that the user's browser is configured to display black text on a white background and become unusable if one or both of these colors are changed.
+</p>
+<p>
+An interesting feature most browsers offer is to intentionally ignore the style sheet supplied by a website. This can help to improve readability, if the style sheet of the site is particularly bad. Again, in Firefox, you can find the respective feature in the &quot;View&quot; menu (visible after pressing the <kbd>ALT</kbd> key). The entry is called &quot;Page Style&quot;.
+</p>
+]]></description><guid>https://www.grois.info/posts/2023-01/2023-01-29-why-is-this-blog-so-ugly.xhtml</guid><pubDate>Sun, 29 Jan 2023 00:00:00 +0000</pubDate></item></channel></rss>
