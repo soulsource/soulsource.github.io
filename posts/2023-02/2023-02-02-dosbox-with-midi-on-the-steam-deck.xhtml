@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+<head>
+<title>Andi's Blog: Dosbox with MIDI on the Steam Deck</title>
+<link rel="top" title="Home" href="/index.xhtml"/>
+<link rel="prev" title="The maths behind passwordmaker-rs-0.2" href="/posts/2023-01/2023-01-29-the-maths-behind-passwordmaker-rs-0-2.xhtml"/>
+</head>
+<body>
+<h1>Dosbox with MIDI on the Steam Deck</h1>
+<h2 id="goal">Goal of this guide</h2>
+<p>
+This guide outlines one way to install <acronym title="Disk Operating System">DOS</acronym> games on the Steam Deck. It also explains how to enable a software synthesizer for <acronym title="Musical Instrument Digital Interface">MIDI</acronym> music support in those games. Finally, some tips on how one might launch those games conveniently from the Steam Deck's Game Mode are given.
+</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<p>
+To follow this guide, you will need to input a lot of text on the Steam Deck. While this is doable with the on-screen keyboard, it's not a convenient experience. I'd therefore strongly suggest to either connect a keyboard to the Deck, or to enable <acronym title="Secure Shell">SSH</acronym> access to the deck. I personally recommend the latter, as it also offers a convenient way to copy files to/from the deck.
+</p>
+<h3 id="ssh-access"><acronym title="Secure Shell">SSH</acronym> access</h3>
+<p>
+The first step get <acronym title="Secure Shell">SSH</acronym> working is to <a href="https://handheld.quest/posts/how-to-ssh-steam-deck/">enable the <acronym title="Secure Shell">SSH</acronym> server on the Steam Deck</a>. Since the deck is a mobile device and might therefore be used in untrusted networks, I'd strongly suggest to either <em>not</em> have the <acronym title="Secure Shell">SSH</acronym> daemon start up automatically, or to <a href="https://wiki.archlinux.org/title/OpenSSH#Force_public_key_authentication">disable password-based logins</a> entirely (of course only after copying your desktop user's public key to the Steam Deck. See either the <a href="https://wiki.archlinux.org/title/SSH_keys#Copying_the_public_key_to_the_remote_server">guide on <acronym title="Secure Shell">SSH</acronym> keys for Linux users</a>, or the <a href="https://the.earth.li/~sgtatham/putty/latest/htmldoc/Chapter8.html#pubkey">guide on <acronym title="Secure Shell">SSH</acronym> keys for PuTTY</a> if you are running Windows).
+</p>
+<p>
+In order to connect to your Steam Deck, you should be able to use the hostname that you can configure in the Steam Deck settings. I named my deck "grois-steamdeck", and all I have to do to connect to it from my Linux desktop is to run <code>ssh deck@grois-steamdeck</code> on the command line, enter my private key's password, and done. I'd expect the process to be reasonably similar on Windows, using <a href="https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html">PuTTY</a>.
+</p>
+<p>
+To copy files you can use (almost) any file manager application on Linux. For instance, file managers using gvfs can just connect using an <acronym title="Secure File Transfer Protocol">sftp</acronym> <acronym title="Uniform Resource Locator">URL</acronym>, in my case <code>sftp://deck@grois-steamdeck</code>. I'm not sure if Windows Explorer can access <acronym title="Secure File Transfer Protocol">sftp</acronym> meanwhile, but if not, programs like <a href="https://filezilla-project.org/">FileZilla</a> or <a href="https://winscp.net/">WinSCP</a> are an adequate option.
+</p>
+<h2 id="dosbox-staging">Installing DosBOX Staging</h2>
+<p>
+I recommend using <a href="https://dosbox-staging.github.io/">DosBOX Staging</a> on the Steam Deck. The main reason is its built-in <acronym title="Musical Instrument Digital Interface">MIDI</acronym> software synthesizer. Installing a standalone software synthesizer on the Steam Deck is not straightforward, because of its read-only root filesystem. The built-in synthesizer of DosBOX staging makes this unnecessary though.
+</p>
+<p>
+The easiest way to install DosBOX Staging is to use Discover in Desktop Mode. All you have to do is to search for "DosBOX Staging" and click "Install".<br/>
+<a href="https://www.grois.info/posts/2023-02/discover-dosbox-staging.png"><img src="https://www.grois.info/posts/2023-02/discover-dosbox-staging_thumb.png" alt="Screenshot of Discover on the Steam Deck" width="320" height="200"/></a>
+</p>
+<p>
+I'm not sure if the configuration files for DosBOX staging get created when installing it, or when it is first launched. It certainly won't hurt to start and quit it though, just to make sure.
+</p>
+<h2 id="midi">Enabling the <acronym title="Musical Instrument Digital Interface">MIDI</acronym> software synthesizer</h2>
+<h3>Sound Font</h3>
+<p>
+FluidSynth needs a sound font file. I'm currently using <a href="https://archive.org/details/sc-55">Patch93's SC-55 Soundfont</a>, but there are plenty of alternatives on the web, for instance <a href="https://github.com/trevor0402/SC55Soundfont">Trevor0402's SC-55 SoundFont</a>.
+</p>
+<p>
+The folder in which the flatpak version of DosBOX Staging searches for Sound Fonts is <code>/home/deck/.var/app/io.github.dosbox-staging/config/dosbox/soundfonts</code>. In case you aren't a seasoned Linux/UNIX user, the <code>.</code> at the beginning of the folder name <code>.var</code> means that this folder is hidden. To see it in Dolphin File Manager, you'll need to enable the display of hidden files/folders therefore.
+</p>
+<h3 id="dosbox-staging-conf">DosBOX configuration</h3>
+<p>
+Now, in order to enable FluidSynth in DosBOX Staging, you'll need to modify the dosbox-staging.conf file. If you are connected over <acronym title="Secure Shell">SSH</acronym>, you can use the nano editor on the command line: <code>nano /home/deck/.var/app/io.github.dosbox-staging/config/dosbox/dosbox-staging.conf</code>. The Steam Deck also comes with the vim editor preinstalled, so if you know how to use it, you can also <code>vim /home/deck/.var/app/io.github.dosbox-staging/config/dosbox/dosbox-staging.conf</code>. Of course you can also just copy the file to your desktop, edit it there with whatever editor you want, and copy it back. The relevant settings are the used <acronym title="Musical Instrument Digital Interface">MIDI</acronym> device and the sound font. The <acronym title="Musical Instrument Digital Interface">MIDI</acronym> device setting is named <code>mididevice</code> and can be found in the <code>[midi]</code> section. The sound font is configured using the <code>soundfont</code> setting in the <code>[fluidsynth]</code> section.
+</p>
+<p>
+In my case those settings are (omitting the other fields in the respective categories):<br/>
+</p>
+<pre><code>[midi]
+mididevice = fluidsynth
+
+[fluidsynth]
+soundfont = SC-55.sf2
+</code></pre>
+<p>
+The sound font can of course also be loaded from a different folder. In that case the full path to the file has to be specified in the dosbox-staging.conf file.
+</p>
+<p>
+For reference, you can <a href="https://www.grois.info/posts/2023-02/dosbox-staging.conf">download my current dosbox-staging.conf file</a>
+</p>
+<h2 id="installing-dos-game">Setting up a <acronym title="Disc Operating System">DOS</acronym> game</h2>
+<p>
+I'll use The Settlers 2 as an example here, because I have it up and running on my Steam Deck and it's working nicely. The procedure should be reasonably similar for any other <acronym title="Disc Operating System">DOS</acronym> game.
+</p>
+<p>
+The version of Settlers 2 I installed on my deck is from <a href="https://www.gog.com"><acronym title="Good Old Games">GoG</acronym></a>. Their download is packaged for Windows only, but on other operating systems one can unpack it using <a href="https://www.winehq.org"><acronym title="WINE is not an emulator">WINE</acronym></a>. I guess with a bit of fiddling one could also unpack it directly on the Steam Deck, but I didn't bother and just launched the installer on my desktop to unpack the files.
+</p>
+<h3 id="copying-files-to-deck">Copying the game files to the Steam Deck</h3>
+<p>
+As already mentioned under <a href="https://www.grois.info/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml#ssh-access"><acronym title="Secure Shell">SSH</acronym> access</a>, on Linux almost any file manager will allow to copy the files over <acronym title="Secure Shell">SSH</acronym>.<br/>
+<a href="https://www.grois.info/posts/2023-02/file-browser-deck.png"><img src="https://www.grois.info/posts/2023-02/file-browser-deck_thumb.png" width="320" height="200" alt="Screenshot of Thunar file browser, showing files on the Steam Deck"/></a><br/>
+On Windows you might need a dedicated program to use <acronym title="Secure File Transfer Protocol">sftp</acronym>, see <a href="https://www.grois.info/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml#ssh-access"><acronym title="Secure Shell">SSH</acronym> access</a>.
+</p>
+<p>
+You can put the files wherever you like under the <code>deck</code> user's home folder. I'd pick some easy to remember/find path, because it's going to be needed when <a href="https://www.grois.info/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml#adding-to-steam">adding the game to the Steam Library</a> later.
+</p>
+<h3 id="game-specific-dosbox-conf">Game-specific dosbox configuration file</h3>
+<p>
+DosBOX Staging uses a layered approach to configuration. This means that one can easily supplement the settings in the global file (the one edited in <a href="https://www.grois.info/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml#dosbox-staging-conf">DosBOX configuration</a>) by a game-specific configuration file.
+</p>
+<p>
+This comes in handy, because the <a href="https://www.dosbox.com/wiki/AUTOEXEC"><code>[autoexec]</code> section</a> can be used to launch the respective game's executable, and other things, like mounting the game's <acronym title="Compact Disc">CD</acronym>. For Settlers 2 for instance, I created a file called &quot;dosbox-siedler2.conf&quot; with the following content:
+</p>
+<pre><code>[sdl]
+fullscreen=true
+autolock=true
+
+[autoexec]
+mount c /home/deck/DosGames/
+imgmount d "/home/deck/DosGames/siedler2/settlers2.ins" -t iso -fs iso
+c:
+cd Siedler2
+@VIDEO\SMACKPLY VIDEO\INTRO.SMK
+s2
+exit
+</code>
+</pre>
+<p>
+Note that the last line in <code>[autoexec]</code> is <code>exit</code>. This makes sure that DosBOX closes after one quits the game. In that snippet, the <a href="https://www.dosbox.com/wiki/MOUNT"><code>mount</code></a> and <a href="https://www.dosbox.com/wiki/IMGMOUNT"><code>imgmount</code></a> commands are part of DoxBOX and mount the folder with the <acronym title="Disc Operating System">DOS</acronym> games as drive C, and the game's <acronym title="Compact Disc">CD</acronym> as drive D. The rest is just regular <acronym title="Disc Operating System">DOS</acronym> batch file syntax that launches the <code>SMACKPLY</code> program to play the intro, and then <code>s2</code> to launch the actual game.
+</p>
+<p>
+You should now be able to launch the game from the command line:<br/>
+<code>flatpak run io.github.dosbox-staging -- -conf /home/deck/DosGames/siedler2/dosbox-siedler2.conf</code>
+</p>
+<h3 id="game-audio-config">Game audio configuration</h3>
+<p>
+It might be required to configure the game's audio to get actual sound and <acronym title="Musical Instrument Digital Interface">MIDI</acronym> output. Since this is only needed once, I'd just do so in Desktop Mode, and suffer the on-screen keyboard for these few inputs. The exact name of the audio configuration utility depends on the game, so consult the game's manual if unsure. In the case of Settlers 2 the program is called <code>DRIVERS&#92;SETSOUND.EXE</code> in the game's install folder. The commands to run it would therefore be:
+</p>
+<pre><code>mount c /home/deck/DosGames/
+c:
+cd Siedler2
+cd DRIVERS
+SETSOUND
+</code>
+</pre>
+<p>
+Unless you changed the DosBOX settings regarding sound, you should usually be able to use &quot;SoundBlaster&quot; or &quot;SoundBlaster 16&quot; for digital audio, and &quot;General MIDI&quot; for music.<br/>
+<a href="https://www.grois.info/posts/2023-02/s2-setsound.png"><img src="https://www.grois.info/posts/2023-02/s2-setsound_thumb.png" width="320" height="212" alt="Screenshot of the Settlers 2 sound settings. Taken on my desktop."/></a>
+</p>
+<h2 id="adding-to-steam">Adding the game to the Steam Library</h2>
+<h3 id="launch-script">Launch script</h3>
+<p>
+The easiest way to add a <acronym title="Disc Operating System">DOS</acronym> game to the Steam Library is to write a short launcher script. I simply named mine &quot;start-s2.sh&quot; and put it into the game's install folder, so I can find it easily. This file can be rather simple: Just a <a href="https://de.wikipedia.org/wiki/Shebang">Shebang</a> and the command to launch the game. For instance:
+</p>
+<pre><code>#!/bin/bash
+flatpak run io.github.dosbox-staging -- -conf /home/deck/DosGames/siedler2/dosbox-siedler2.conf
+</code></pre>
+<p>
+The script needs to have the "execute" permission set. The command to do that is <code>chmod +x start-s2.sh</code>. Of course you can do that using a graphical file manager too. I'm not sure if any Windows <acronym title="Secure File Transfer Protocol">sftp</acronym> programs allow you to modify the permissions on a file though. Just to be sure it works, it might be worth trying to launch the game from the command line.
+</p>
+<h3 id="steam-library">Adding the game to the Steam Library</h3>
+<p>
+If you now open Steam in Desktop Mode, you can go to the &quot;Games&quot; menu, and click &quot;Add a Non-Steam game to My Library...&quot;. Click the &quot;Browse&quot; button at the bottom of the selection window, and navigate the file browser to the folder where you put the launch script. Make sure to select &quot;All Files&quot; for the &quot;File Type&quot;, as Steam will not show executables otherwise.<br/>
+<a href="https://www.grois.info/posts/2023-02/add-to-library.jpg"><img src="https://www.grois.info/posts/2023-02/add-to-library_thumb.jpg" width="320" height="192" alt="Screenshot of Steam's &quot;Add Non-Steam game to My Library&quot; dialogue."/></a>
+</p>
+<p>
+After adding the game, the entry in the library will be named just like the script. This can easily be fixed by right-clicking it, and opening the &quot;Properties&quot; window. The text-box right at the top allows to change the game name.
+</p>
+<h3 id="steam-grid-db">Setting a grid image</h3>
+<p>
+Last, but not least, the game needs some artwork in Steam, to make it recognizable. I recommend the excellent <a href="https://www.steamgriddb.com/">SteamGridDB</a> website, which offers artwork for a lot of games, including many <acronym title="Disc Operating System">DOS</acronym> games. They even have a tool to easily set the artworks in Steam, named <a href="https://www.steamgriddb.com/boop">SGDBoop</a>.
+</p>
+<h2 id="results">Enjoy the results</h2>
+<p>
+Now everything should be up and running, so it's time to enjoy the actual game.<br/>
+<a href="https://www.grois.info/posts/2023-02/library.jpg"><img src="https://www.grois.info/posts/2023-02/library_thumb.jpg" width="320" height="200" alt="Screenshot of the Steam Library on the Steam Deck, showing Settlers 2"/></a>
+<a href="https://www.grois.info/posts/2023-02/settlers2.jpg"><img src="https://www.grois.info/posts/2023-02/settlers2_thumb.jpg" width="320" height="200" alt="Screenshot of Settlers 2 running on the Steam Deck in DosBOX Staging with working sound and MIDI - of course one can't see the sound"/></a>
+</p>
+<hr/>
+<h4 id="navigation">Navigation</h4>
+<p>
+<a href="/posts/2023-01/2023-01-29-the-maths-behind-passwordmaker-rs-0-2.xhtml">Previous: The maths behind passwordmaker-rs-0.2</a>
+<a href="/index.xhtml">Home</a>
+</p>
+</body>
+</html>
