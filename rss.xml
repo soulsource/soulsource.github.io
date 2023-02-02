@@ -30,7 +30,7 @@ I'm not sure if the configuration files for DosBOX staging get created when inst
 <h2 id="midi">Enabling the <acronym title="Musical Instrument Digital Interface">MIDI</acronym> software synthesizer</h2>
 <h3>Sound Font</h3>
 <p>
-FluidSynth needs a sound font file. I'm currently using <a href="https://archive.org/details/sc-55">Patch93's SC-55 Soundfont</a>, but there are plenty of alternatives on the web, for instance <a href="https://github.com/trevor0402/SC55Soundfont">Trevor0402's SC-55 SoundFont</a>.
+FluidSynth needs a sound font file. You can find a list of sound font files and download links for most of them on the <a href="https://github.com/dosbox-staging/dosbox-staging/wiki/MIDI">DosBOX Staging WIKI page on <acronym title="Musical Instrument Digital Interface">MIDI</acronym></a>. I personally think that Patch93's SC-55 Soundfont is a good compromise between sound quality and retro feel, but of course that's a matter of taste.
 </p>
 <p>
 The folder in which the flatpak version of DosBOX Staging searches for Sound Fonts is <code>/home/deck/.var/app/io.github.dosbox-staging/config/dosbox/soundfonts</code>. In case you aren't a seasoned Linux/UNIX user, the <code>.</code> at the beginning of the folder name <code>.var</code> means that this folder is hidden. To see it in Dolphin File Manager, you'll need to enable the display of hidden files/folders therefore.
