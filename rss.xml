@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>Andi&apos;s Blog</title><link>https://www.grois.info</link><description>Blog that&apos;s mostly about tech stuff, but also random rambling</description><item><title>Adventures with Free Monads and higher</title><link>https://www.grois.info/posts/2023-03/2023-03-12-adventures-with-free-monads-and-higher.xhtml</link><description><![CDATA[<p>
+<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>Andi&apos;s Blog</title><link>https://www.grois.info</link><description>Blog that&apos;s mostly about tech stuff, but also random rambling</description><item><title>Adventures with Free Monads and higher</title><link>https://www.grois.info/posts/2023-03/2023-03-11-adventures-with-free-monads-and-higher.xhtml</link><description><![CDATA[<p>
 First things first: If you only care about the code, here's the <a href="https://github.com/soulsource/higher-free-macro/">repo on github</a>.
 </p>
 <h2 id="motivation">Motivation</h2>
@@ -621,7 +621,7 @@ This interpreter just counts how many beers we consumed at each bar. There isn't
 	}<br/>
 </code>
 </p>
-]]></description><guid>https://www.grois.info/posts/2023-03/2023-03-12-adventures-with-free-monads-and-higher.xhtml</guid><pubDate>Sun, 12 Mar 2023 00:06:00 +0100</pubDate></item><item><title>Dosbox with MIDI on the Steam Deck</title><link>https://www.grois.info/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml</link><description><![CDATA[<h2 id="goal">Goal of this guide</h2>
+]]></description><guid>https://www.grois.info/posts/2023-03/2023-03-11-adventures-with-free-monads-and-higher.xhtml</guid><pubDate>Sat, 11 Mar 2023 23:20:00 +0100</pubDate></item><item><title>Dosbox with MIDI on the Steam Deck</title><link>https://www.grois.info/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml</link><description><![CDATA[<h2 id="goal">Goal of this guide</h2>
 <p>
 This guide outlines one way to install <acronym title="Disk Operating System">DOS</acronym> games on the Steam Deck. It also explains how to enable a software synthesizer for <acronym title="Musical Instrument Digital Interface">MIDI</acronym> music support in those games. Finally, some tips on how one might launch those games conveniently from the Steam Deck's Game Mode are given.
 </p>
