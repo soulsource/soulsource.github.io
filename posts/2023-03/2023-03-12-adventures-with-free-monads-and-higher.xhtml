@@ -1,0 +1,641 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1 plus MathML 2.0 plus SVG 1.1//EN" "http://www.w3.org/2002/04/xhtml-math-svg/xhtml-math-svg.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+<head>
+<title>Andi's Blog: Adventures with Free Monads and higher</title>
+<link rel="top" title="Home" href="/index.xhtml"/>
+<link rel="prev" title="Dosbox with MIDI on the Steam Deck" href="/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+</head>
+<body>
+<h1>Adventures with Free Monads and higher</h1>
+<p>
+First things first: If you only care about the code, here's the <a href="https://github.com/soulsource/higher-free-macro/">repo on github</a>.
+</p>
+<h2 id="motivation">Motivation</h2>
+<p>
+While learning a bit of Haskell I stumbled across the idea that one can use something called <a href="https://www.haskellforall.com/2012/06/you-could-have-invented-free-monads.html">Free Monad to represent an abstract syntax tree</a> of domain-specific languages. Since my Haskell-fu is still not too great, I didn't immediately understand that blog post. However, my interest was piqued. Domain specific languages, encoded in an easy to interpret syntax tree, sound like a nice building block for high-level game logic, after all.
+</p>
+<p>
+The first thing I tried was to follow the example in the linked blog post to implement a small domain specific language for the domain of spending a night drinking in several bars, with varing beer temperature. It took me unreasonably long to add the functionality to stop drinking the first time a lukewarm beer gets served... Of course at the Le Rieur Sanglier. Let's better not talk too much about the <a href="https://www.grois.info/posts/2023-03/NiceEvening.hs">full Haskell code of that experiment</a>...
+</p>
+<p>
+Still, I didn't feel like I actually understood what I was doing. So, I went ahead and tried to understand <a href="https://stackoverflow.com/a/13352580">the maths behind Free Monads</a>. Since I don't have a solid background in Category Theory, I couldn't claim with confidence that I understood it though...
+</p>
+<p>
+This made me decide to learn more about category theory at some point, but for the moment I chose to follow a more pragmatic approach: Learnign by doing. In this case that means implementing the Free type (or a close-enough approximation) in Rust.
+</p>
+<h2 id="prerequisites">Prerequisites for implementing Free Monads in Rust</h2>
+<p>
+The obvious requirement of implementing a Free Monad is the ability to express what a Monad is. <a href="https://gist.github.com/edmundsmith/855fcf0cb35dd467c29a9350481f0ecf">Writing a Monad trait was really difficult in Rust until recently</a>. Luckily, <a href="https://blog.rust-lang.org/2022/10/28/gats-stabilization.html">Generic Associated Types are stable</a> meanwhile, what makes it possible to implement a type trait for <code>Monad</code> without the need for a workaround. The "<a href="https://docs.rs/higher/">higher</a>" crate does just that, with some nice extras like do-notation, and I decided to use it as a basis for my own experiments.
+</p>
+<p>
+The next ingredient is the actual <code>Free</code> type. Rust does not have higher kinded types, so, where in Haskell one would just write <code>data&nbsp;Free&nbsp;f&nbsp;a&nbsp;= Pure&nbsp;a&nbsp;| Free&nbsp;(f&nbsp;(Free&nbsp;f&nbsp;a))</code>, the closest thing one could do in Rust would be <code>enum Free&lt;A,G&gt;{ Pure(A), Free(G) }</code> with further constraints on the respective trait implementations. But <code>G</code> depends on <code>A</code>, so, after mapping/binding we end up with a different <code>G</code>. For now, let us not bother about this, the problems will show up soon enough.
+</p>
+<p>
+In addition, we need an indirection. Since <code>G</code> will be referencing <code>Free&lt;A,G&gt;</code>, it needs to be put behind some smart pointer. Since (nearly) all trait methods in "higher" demand ownership of the passed-in values, and some types in "higher" like <code>ApplyFn</code> do not implement <code>Clone</code>, this needs to be a smart pointer that allows the code to take ownership without the need to copy its data. This pretty much limits the usage to <a href="https://manishearth.github.io/blog/2017/01/10/rust-tidbits-box-is-special/"><code>Box</code>, which is <em>special</em></a> in that regard. In other words, our actual type will be more along the lines of <code>enum Free&lt;A,G&gt;{ Pure(A), Free(Box&lt;G&gt;) }</code>. This is still fine though, because for <a href="https://github.com/rust-lang/rust/issues/87121">almost</a> all intents and purposes, <code>Box</code> is transparent.
+</p>
+<p>
+Now, in order to turn this type into a <a href="https://docs.rs/higher/latest/higher/trait.Monad.html"><code>Monad</code></a>, we just have to implement a few traits from "higher" on it: <a href="https://docs.rs/higher/latest/higher/trait.Functor.html"><code>Functor</code></a>, <a href="https://docs.rs/higher/latest/higher/trait.Pure.html"><code>Pure</code></a>, <a href="https://docs.rs/higher/latest/higher/trait.Apply.html"><code>Apply</code></a>, and <a href="https://docs.rs/higher/latest/higher/trait.Bind.html"><code>Bind</code></a>. This sounds easy enough, right?
+</p>
+<h2 id="first_attempt">A naive first attempt</h2>
+<p>
+With that in mind, we can start hacking:<br/>
+<code>
+enum Free&lt;A,G&gt;{<br/>
+&nbsp;&nbsp;Pure(A),<br/>
+&nbsp;&nbsp;Free(Box&lt;G&gt;)<br/>
+}<br/>
+<br/>
+impl&lt;'a, A, G&gt; Functor&lt;'a, A&gt; for Free&lt;A,G&gt;<br/>
+&nbsp;&nbsp;where G : Functor&lt;'a, Self&gt;<br/>
+{<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = Free&lt;T,???&gt;<br/>
+&nbsp;&nbsp;fn fmap&lt;B, F&gt;(self, f: F) -&gt; Self::Target&lt;B&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;todo!()<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+Now, we hit the problem mentioned before. How are we supposed to express the type that <code>G</code> becomes in the <acronym title="Generic Associated Type">GAT</acronym>? Trying to write it by hand we end up with <code>type&nbsp;Target&lt;T&gt;&nbsp;=&nbsp;Free&lt;T,Free&lt;T,Free&lt;Free&lt;T,...&gt;&gt;&gt;&gt;</code>. However, we could try to refer to <code>Self</code> to escape this: <code>type&nbsp;Target&lt;T&gt;&nbsp;=&nbsp;Free&lt;T,G::Target&lt;Self::Target&lt;T&gt;&gt;&gt;</code>. This looks promising, except for the little issue that the compiler tries to replace it with <code>type&nbsp;Target&lt;T&gt;&nbsp;=&nbsp;Free&lt;T,Free&lt;T,Free&lt;Free&lt;T,...&gt;&gt;&gt;&gt;</code> again...
+</p>
+<p>
+Obviously this leads nowhere. <a href="https://doc.rust-lang.org/reference/types.html#recursive-types">Type aliases in Rust cannot be recursive.</a> Therefore the type signature of the Free Monad type has to look different.
+</p>
+<h2 id="first_macro_attempt">Macros to the rescue</h2>
+<p>
+The problem obviously arises, because the second type parameter of the <code>enum Free&lt;A,G&gt;</code> depends on the first one. But there is a rather trivial way to get rid of it, by using a newtype:<br/>
+<code>struct ConcreteFree&lt;A&gt;(Free&lt;A,ConcreteFunctorType&lt;Self&gt;&gt;)</code>
+</p>
+<p>
+Unlike type aliases, <a href="https://doc.rust-lang.org/reference/types.html#recursive-types">actual types in Rust can be recursive</a>. While this obviously works, it would require implementing the traits needed for it to be a <code>Monad</code> for every newtype of this shape. That sounds like the perfect job for a macro though.
+</p>
+<p>
+However, if the type is already generated by a macro, the newtype is no longer necessary. The macro could just directly implement the <code>enum ConcreteFree&lt;A&gt;</code>. While implementing <code>Functor</code> and <code>Bind</code> for this macro-generated type, we run into an obstacle in the form of ownership of the mapping function:<br/>
+<code>
+impl&lt;'a,A&gt; Functor&lt;'a,A&gt; for $name&lt;A&gt; {<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = $name&lt;T&gt;;<br/>
+fn fmap&lt;B,F&gt;(self, f: F) -&gt; Self::Target&lt;B&gt; where F: Fn(A) -&gt; B + 'a{<br/>
+&nbsp;&nbsp;match self{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;$name::Pure(a) =&gt; $name::Pure(f(a)),<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;$name::Free(fa) =&gt; {$name::Free(Box::new(fa.fmap(|x| x.fmap(f))))},<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+The problem is that <code>f</code> gets <a href="https://doc.rust-lang.org/stable/error_codes/E0507.html">moved out of the closure</a> in the <code>$name::Free(fa)</code> match arm, because there is no guarantee that <code>fa.fmap()</code> doesn't call the closure multiple times.
+</p>
+<p>
+This is important enough to highlight it, and to add an interlude instead of going directly to the fix for the issue, because this one compile error is actually what captures the essence of a Free Monad from a programmer's perspective. In other words, this was the point at which the little hamster living in my brain jumped into its wheel and started spinning it.
+</p>
+<h2 id="free_monad_ramblings">So, what is a Free Monad now, in simple terms?</h2>
+<p>
+My own mental picture, which is a gross oversimplification and ignores all mathematical details, is actually a rather simple one. A Free Monad builds up a tree of nodes. The nodes can either be leaf-nodes and contain a value (Pure), or can be inner nodes (Free) with child-nodes, the structure of which is imposed by the Functor the Free Monad is based on. Free nodes can also be leaf-nodes though, in case the Functor has states that hold no data, for instance <code>Option::None</code>. Free nodes can hold values too, but those values are not affected by map/bind/... The monadic operations performed on a Free Monad traverse it (depth first), and only affect the <code>Pure</code> nodes. For instance, <code>a.apply(f)</code> traverses the Free Monad <code>f</code>, and replaces any <code>Pure</code> it finds with <code>a.fmap(v)</code>, where <code>v</code> is the value (in this case: a function) stored in the Pure node. The result of <code>a.apply(f)</code> is therefore a tree where each previous <code>Pure</code> has been replaced by a sub-tree that looks like <code>a</code>, and holds the mapped values in its <code>Pure</code> nodes. Or, as a simler example, let's take <code>a.bind(f)</code>. The function <code>f</code> returns a Free Monad too, so what this does is that every <code>Pure</code> in <code>a</code> gets replaced by the result of <code>f</code> applied to its value. And, the most simple example, <code>a.fmap(f)</code>, just replaces each <code>Pure</code> in <code>a</code> by another <code>Pure</code>, now holding the mapped value.
+</p>
+<h3 id="ugly_drawings">Illustrations of fmap, bind and apply</h3>
+<h4 id="ugly_fmap_drawing">What does <code>a.fmap(f)</code> map?</h4>
+<p>
+Sometimes a picture says more than a thousand words. For these drawings, let's just take a list with 2 elements as our Functor. The most simple operation is <code>a.fmap(f)</code> where <code>f : Fn(A)-&gt;B</code>. Let's just assume our <code>a</code> looks like this:
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 285 120" preserveAspectRatio="xMidYMin meet" style="max-width:8cm;">
+<svg:defs>
+<svg:svg id="Free" overflow="visible">
+<svg:rect width="100" height="30" fill-opacity="0" stroke-width="3px" stroke="#000000" stroke-opacity="1"/>
+<svg:text font-size="16" x="10" y="20" fill="#000000">Free</svg:text>
+</svg:svg>
+<svg:svg id="Pure" overflow="visible">
+<svg:rect width="100" height="30" fill-opacity="0" stroke-width="3px" stroke="#000000" stroke-opacity="1"/>
+</svg:svg>
+</svg:defs>
+<svg:use xlink:href="#Free" x="120"/>
+<svg:use xlink:href="#Free" x="65" y="40"/>
+<svg:use xlink:href="#Pure" x="175" y="40"/>
+<svg:text font-size="16" x="185" y="60" fill="#000000">Pure d</svg:text>
+<svg:use xlink:href="#Pure" x="10" y="80"/>
+<svg:text font-size="16" x="20" y="100" fill="#000000">Pure b</svg:text>
+<svg:use xlink:href="#Pure" x="120" y="80"/>
+<svg:text font-size="16" x="130" y="100" fill="#000000">Pure c</svg:text>
+<svg:svg stroke="#000000" stroke-width="3px">
+<svg:line x1="170" y1="30" x2="225" y2="40"/>
+<svg:line x1="170" y1="30" x2="115" y2="40"/>
+<svg:line x1="115" y1="70" x2="60" y2="80"/>
+<svg:line x1="115" y1="70" x2="170" y2="80"/>
+</svg:svg>
+</svg:svg>
+</div>
+<p>
+In the case of <code>a.fmap(f)</code> the shape of the Free Monad doesn't change. Just the values in the Pure nodes are replaced:
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 285 120" preserveAspectRatio="xMidYMin meet" style="max-width:8cm;">
+<svg:use xlink:href="#Free" x="120"/>
+<svg:use xlink:href="#Free" x="65" y="40"/>
+<svg:use xlink:href="#Pure" x="175" y="40"/>
+<svg:text font-size="16" x="185" y="60" fill="#000000">Pure f(d)</svg:text>
+<svg:use xlink:href="#Pure" x="10" y="80"/>
+<svg:text font-size="16" x="20" y="100" fill="#000000">Pure f(b)</svg:text>
+<svg:use xlink:href="#Pure" x="120" y="80"/>
+<svg:text font-size="16" x="130" y="100" fill="#000000">Pure f(c)</svg:text>
+<svg:svg stroke="#000000" stroke-width="3px">
+<svg:line x1="170" y1="30" x2="225" y2="40"/>
+<svg:line x1="170" y1="30" x2="115" y2="40"/>
+<svg:line x1="115" y1="70" x2="60" y2="80"/>
+<svg:line x1="115" y1="70" x2="170" y2="80"/>
+</svg:svg>
+</svg:svg>
+</div>
+<h4 id="ugly_bind_drawing">And <code>a.bind(f)</code>?</h4>
+<p>
+<code>a.bind(f)</code> is rather similar to <a href="#ugly_fmap_drawing"><code>a.fmap(f)</code></a>, but the signature of <code>f</code> is different: <code>f : Fn(A)-&gt;Free&lt;B&gt;</code>. So, instead of replacing every Pure node by another Pure node, <code>a.bind(f)</code> can replace individual nodes by whole sub-trees. Let's start with the same example tree again:
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 285 120" preserveAspectRatio="xMidYMin meet" style="max-width:8cm;">
+<svg:use xlink:href="#Free" x="120"/>
+<svg:use xlink:href="#Free" x="65" y="40"/>
+<svg:use xlink:href="#Pure" x="175" y="40"/>
+<svg:text font-size="16" x="185" y="60" fill="#000000">Pure d</svg:text>
+<svg:use xlink:href="#Pure" x="10" y="80"/>
+<svg:text font-size="16" x="20" y="100" fill="#000000">Pure b</svg:text>
+<svg:use xlink:href="#Pure" x="120" y="80"/>
+<svg:text font-size="16" x="130" y="100" fill="#000000">Pure c</svg:text>
+<svg:svg stroke="#000000" stroke-width="3px">
+<svg:line x1="170" y1="30" x2="225" y2="40"/>
+<svg:line x1="170" y1="30" x2="115" y2="40"/>
+<svg:line x1="115" y1="70" x2="60" y2="80"/>
+<svg:line x1="115" y1="70" x2="170" y2="80"/>
+</svg:svg>
+</svg:svg>
+</div>
+<p>
+This gets replaced by:
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 285 120" preserveAspectRatio="xMidYMin meet" style="max-width:8cm;">
+<svg:use xlink:href="#Free" x="120"/>
+<svg:use xlink:href="#Free" x="65" y="40"/>
+<svg:use xlink:href="#Pure" x="175" y="40"/>
+<svg:text font-size="16" x="185" y="60" fill="#000000">f(d)</svg:text>
+<svg:use xlink:href="#Pure" x="10" y="80"/>
+<svg:text font-size="16" x="20" y="100" fill="#000000">f(b)</svg:text>
+<svg:use xlink:href="#Pure" x="120" y="80"/>
+<svg:text font-size="16" x="130" y="100" fill="#000000">f(c)</svg:text>
+<svg:svg stroke="#000000" stroke-width="3px">
+<svg:line x1="170" y1="30" x2="225" y2="40"/>
+<svg:line x1="170" y1="30" x2="115" y2="40"/>
+<svg:line x1="115" y1="70" x2="60" y2="80"/>
+<svg:line x1="115" y1="70" x2="170" y2="80"/>
+</svg:svg>
+</svg:svg>
+</div>
+<p>
+If, for example, <code>f(b)=Pure x</code>, <code>f(c)=Free(Pure y, Pure z)</code> and <code>f(d)=Pure w</code>, the result of <code>a.bind(f)</code> would be this tree:
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 285 160" preserveAspectRatio="xMidYMin meet" style="max-width:8cm;">
+<svg:use xlink:href="#Free" x="120"/>
+<svg:use xlink:href="#Free" x="65" y="40"/>
+<svg:use xlink:href="#Pure" x="175" y="40"/>
+<svg:text font-size="16" x="185" y="60" fill="#000000">Pure w</svg:text>
+<svg:use xlink:href="#Pure" x="10" y="80"/>
+<svg:text font-size="16" x="20" y="100" fill="#000000">Pure x</svg:text>
+<svg:use xlink:href="#Free" x="120" y="80"/>
+<svg:use xlink:href="#Pure" x="65" y="120"/>
+<svg:text font-size="16" x="75" y="140" fill="#000000">Pure y</svg:text>
+<svg:use xlink:href="#Pure" x="175" y="120"/>
+<svg:text font-size="16" x="185" y="140" fill="#000000">Pure z</svg:text>
+<svg:svg stroke="#000000" stroke-width="3px">
+<svg:line x1="170" y1="30" x2="225" y2="40"/>
+<svg:line x1="170" y1="30" x2="115" y2="40"/>
+<svg:line x1="115" y1="70" x2="60" y2="80"/>
+<svg:line x1="115" y1="70" x2="170" y2="80"/>
+<svg:line x1="170" y1="110" x2="125" y2="120"/>
+<svg:line x1="170" y1="110" x2="225" y2="120"/>
+</svg:svg>
+</svg:svg>
+</div>
+<h4 id="ugly_apply_drawing">And what exactly does <code>a.apply(f)</code> apply?</h4>
+<p>
+Last, let us take a look at an example of <code>a.apply(f)</code>, where <code>f</code> is given by this tree:
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 285 120" preserveAspectRatio="xMidYMin meet" style="max-width:8cm;">
+<svg:use xlink:href="#Free" x="65"/>
+<svg:use xlink:href="#Free" x="120" y="40"/>
+<svg:use xlink:href="#Pure" x="10" y="40"/>
+<svg:text font-size="16" x="20" y="60" fill="#000000">Pure g</svg:text>
+<svg:use xlink:href="#Pure" x="65" y="80"/>
+<svg:text font-size="16" x="75" y="100" fill="#000000">Pure h</svg:text>
+<svg:use xlink:href="#Pure" x="175" y="80"/>
+<svg:text font-size="16" x="185" y="100" fill="#000000">Pure i</svg:text>
+<svg:svg stroke-width="3px" stroke="#000000">
+<svg:line x1="115" y1="30" x2="170" y2="40"/>
+<svg:line x1="115" y1="30" x2="60" y2="40"/>
+<svg:line x1="170" y1="70" x2="115" y2="80"/>
+<svg:line x1="170" y1="70" x2="225" y2="80"/>
+</svg:svg>
+</svg:svg>
+</div>
+<p>
+If we now call <code>a.apply(f)</code>, the result would become
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 285 120" preserveAspectRatio="xMidYMin meet" style="max-width:8cm;">
+<svg:use xlink:href="#Free" x="65"/>
+<svg:use xlink:href="#Free" x="120" y="40"/>
+<svg:use xlink:href="#Pure" x="10" y="40"/>
+<svg:text font-size="16" x="20" y="60" fill="#000000">a.fmap(g)</svg:text>
+<svg:use xlink:href="#Pure" x="65" y="80"/>
+<svg:text font-size="16" x="75" y="100" fill="#000000">a.fmap(h)</svg:text>
+<svg:use xlink:href="#Pure" x="175" y="80"/>
+<svg:text font-size="16" x="185" y="100" fill="#000000">a.fmap(i)</svg:text>
+<svg:svg stroke-width="3px" stroke="#000000">
+<svg:line x1="115" y1="30" x2="170" y2="40"/>
+<svg:line x1="115" y1="30" x2="60" y2="40"/>
+<svg:line x1="170" y1="70" x2="115" y2="80"/>
+<svg:line x1="170" y1="70" x2="225" y2="80"/>
+</svg:svg>
+</svg:svg>
+</div>
+<p>
+For example, if <code>a</code> would be this tree:
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 285 120" preserveAspectRatio="xMidYMin meet" style="max-width:8cm;">
+<svg:use xlink:href="#Free" x="120"/>
+<svg:use xlink:href="#Free" x="65" y="40"/>
+<svg:use xlink:href="#Pure" x="175" y="40"/>
+<svg:text font-size="16" x="185" y="60" fill="#000000">Pure d</svg:text>
+<svg:use xlink:href="#Pure" x="10" y="80"/>
+<svg:text font-size="16" x="20" y="100" fill="#000000">Pure b</svg:text>
+<svg:use xlink:href="#Pure" x="120" y="80"/>
+<svg:text font-size="16" x="130" y="100" fill="#000000">Pure c</svg:text>
+<svg:svg stroke="#000000" stroke-width="3px">
+<svg:line x1="170" y1="30" x2="225" y2="40"/>
+<svg:line x1="170" y1="30" x2="115" y2="40"/>
+<svg:line x1="115" y1="70" x2="60" y2="80"/>
+<svg:line x1="115" y1="70" x2="170" y2="80"/>
+</svg:svg>
+</svg:svg>
+</div>
+<p>
+The result of <code>a.apply(f)</code> would then look like this:
+</p>
+<div>
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" viewBox="0 -5 670 210" preserveAspectRatio="xMidYMin meet" style="max-width:20cm;">
+<svg:use xlink:href="#Free" x="257.5"/>
+<svg:use xlink:href="#Free" x="120" y="40"/>
+<svg:use xlink:href="#Free" x="395" y="40"/>
+<svg:use xlink:href="#Free" x="65" y="80"/>
+<svg:use xlink:href="#Pure" x="175" y="80"/>
+<svg:text font-size="16" x="185" y="100" fill="#000000">Pure g(d)</svg:text>
+<svg:use xlink:href="#Free" x="285" y="80"/>
+<svg:use xlink:href="#Free" x="505" y="80"/>
+<svg:use xlink:href="#Pure" x="10" y="120"/>
+<svg:text font-size="16" x="20" y="140" fill="#000000">Pure g(b)</svg:text>
+<svg:use xlink:href="#Pure" x="120" y="120"/>
+<svg:text font-size="16" x="130" y="140" fill="#000000">Pure g(c)</svg:text>
+<svg:use xlink:href="#Free" x="230" y="120"/>
+<svg:use xlink:href="#Pure" x="340" y="120"/>
+<svg:text x="350" y="140" font-size="16" fill="#000000">Pure h(d)</svg:text>
+<svg:use xlink:href="#Free" x="450" y="120"/>
+<svg:use xlink:href="#Pure" x="560" y="120"/>
+<svg:text x="570" y="140" font-size="16" fill="#000000">Pure i(d)</svg:text>
+<svg:use xlink:href="#Pure" x="175" y="160"/>
+<svg:text x="185" y="180" font-size="16" fill="#000000">Pure h(b)</svg:text>
+<svg:use xlink:href="#Pure" x="285" y="160"/>
+<svg:text x="295" y="180" font-size="16" fill="#000000">Pure h(c)</svg:text>
+<svg:use xlink:href="#Pure" x="395" y="160"/>
+<svg:text x="405" y="180" font-size="16" fill="#000000">Pure i(b)</svg:text>
+<svg:use xlink:href="#Pure" x="505" y="160"/>
+<svg:text x="515" y="180" font-size="16" fill="#000000">Pure i(c)</svg:text>
+<svg:svg stroke-width="3px" stroke="#000000">
+<svg:line x1="307.5" y1="30" x2="170" y2="40"/>
+<svg:line x1="307.5" y1="30" x2="445" y2="40"/>
+<svg:line x1="170" y1="70" x2="115" y2="80"/>
+<svg:line x1="170" y1="70" x2="225" y2="80"/>
+<svg:line x1="445" y1="70" x2="335" y2="80"/>
+<svg:line x1="445" y1="70" x2="555" y2="80"/>
+<svg:line x1="115" y1="110" x2="60" y2="120"/>
+<svg:line x1="115" y1="110" x2="170" y2="120"/>
+<svg:line x1="335" y1="110" x2="280" y2="120"/>
+<svg:line x1="335" y1="110" x2="390" y2="120"/>
+<svg:line x1="555" y1="110" x2="500" y2="120"/>
+<svg:line x1="555" y1="110" x2="610" y2="120"/>
+<svg:line x1="280" y1="150" x2="225" y2="160"/>
+<svg:line x1="280" y1="150" x2="335" y2="160"/>
+<svg:line x1="500" y1="150" x2="445" y2="160"/>
+<svg:line x1="500" y1="150" x2="555" y2="160"/>
+</svg:svg>
+</svg:svg>
+</div>
+<p>
+As you can see, the shape after <code>a.apply(f)</code> matches <code>f</code>, with every <code>Pure x</code> replaced by the result of calling <code>a.fmap(x)</code>.
+</p>
+<h4 id="reminder_that_tree_is_a_too_simple_picture">A small reminder</h4>
+<p>
+Please also keep in mind that the tree-picture is just that, a mental picture. The actual data structure can be more complicated than that. For instance, if the Functor uses continuation functions (see <a href="#consequences_for_dsls">below</a>), the actual shape of a branch can depend on values that are only supplied after its creation. Of course it still behaves like a tree, but the branches are created in a lazy manner then.
+</p>
+<h3 id="consequences_for_dsls">Consequences for <acronym title="Embedded Domain Specific Language">eDSL</acronym>s</h3>
+<p>
+This structure can be used to express embedded domain specific languages in a rather simple manner, especially when combined with do-notation:
+</p>
+<ul>
+<li>Commands are <code>Free</code> nodes. To append a command to a program, one can use <code>bind()</code> to replace the previous <code>Pure</code> nodes with it. By default, new commands contain &quot;default&quot; <code>Pure</code> nodes.</li>
+<li>Return values are stored in <code>Pure</code> nodes. That way, the next command that gets appended with <code>bind()</code> can take that value as parameter. When using do-notation, it can be assigned to a name, and commands further down can refer to it.</li>
+<li>To accept input from the interpreter of the <acronym title="Embedded Domain Specific Language">eDSL</acronym>, <code>Free</code> nodes can contain a continuation function that takes that value as input parameter, and returns the remainder of the tree that depends on the input. This will get more clear once we get <a href="#usage_example">to an actual example.</a></li>
+</ul>
+<h3 id="return_of_the_maths">One word about mathematics</h3>
+<p>
+I know, I wrote that this ignores all mathematical details, but one thing I have to mention: By its very definition, a <a href="https://en.wikipedia.org/wiki/Free_object">Free Monad</a> obays the <a href="https://wiki.haskell.org/Monad_laws">Monad laws</a> as long as the Functor it is based on obeys the <a href="https://wiki.haskell.org/index.php?title=Functor&amp;oldid=64838#Functor_Laws">Functor laws</a>. In other words, for our <acronym title="Embedded Domain Specific Language">eDSL</acronym> use case, we really need to make sure our Functor is actually a lawful Functor, not only something just implementing the trait.
+</p>
+<h2 id="generic_a_new_hope">A generic attempt</h2>
+<p>
+All that thinking about the properties of Functors and the Free Monad got the hamster wheel in my brain spinning quite fast. And just before the hamster got a heart attack, a thought was produced: If the Functor we use as a basis for our Free Monad obeys the <a href="https://wiki.haskell.org/index.php?title=Functor&amp;oldid=64838#Functor_Laws">Functor laws</a>, especially the one regarding the composition of morphisms, then the <code>Functor&lt;'a,A&gt;::Target&lt;T&gt;</code> <em>must not</em> depend on <code>A</code>. Or, in other words,<br/>
+<code>&#x2200;A&#x2200;B&#x2200;C : Functor&lt;A&gt;::Target&lt;B&gt;::Target&lt;C&gt; = Functor&lt;A&gt;::Target&lt;C&gt;</code>.
+</p>
+<p>
+This sounds like something that we might be able to convey to the Rust compiler, in order to eliminate the Functor's exact type from Free's type signature. This also sounds like a perfect use case for the <a href="https://doc.rust-lang.org/reference/types/never.html"><code>!</code> type</a> to express that the type in the signature will never actually be constructed:<br/>
+<code>
+use never_say_never::Never;<br/>
+enum Free&lt;'a,A,F&gt; where F : Functor&lt;'a,Never&gt;{<br/>
+&nbsp;&nbsp;Pure(A),<br/>
+&nbsp;&nbsp;Free(Box&lt;F::Target&lt;Self&gt;&gt;)<br/>
+}<br/>
+impl&lt;'a,A,G&gt; Free&lt;'a,A,G&gt; where G : Functor&lt;'a,Never&gt;{<br/>
+&nbsp;&nbsp;fn __fmap_impl&lt;B, F&gt;(self, f: &amp;'a F) -&gt; Free&lt;'a,B,G&gt;<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;where F: Fn(A) -&gt; B + 'a,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;G::Target::&lt;Self&gt; : Functor&lt;'a, Self, Target&lt;Free&lt;'a,B,G&gt;&gt; = G::Target&lt;Free&lt;'a,B,G&gt;&gt;&gt;<br/>
+&nbsp;&nbsp;{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;match self {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Free::Pure(a) =&gt; {Free::Pure(f(a))},<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Free::Free(fa) =&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Free::&lt;'a,B,G&gt;::Free(Box::new(<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;fa.fmap(|x| x.__fmap_impl(f))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+This actually compiles in current Stable Rust. Also, this includes the fix for the issue we had <a href="#first_macro_attempt">above</a>. Instead of consuming the mapping function, we take a reference to it. But now we have another issue: The trait bound expressing that we are dealing with a lawful Functor is on the fmap function. If we try to implement the <a href="https://docs.rs/higher/latest/higher/trait.Functor.html"><code>Functor</code></a> trait, we have no way to express this, because putting the same constraint on the <code>fmap()</code> function causes <a href="https://doc.rust-lang.org/error_codes/E0276.html">[E0276]: impl has stricter requirements than trait</a>. If only there was a syntax in Rust to express <code>&#x2200;B</code>... Then we could actually move that bound to the trait implementation itself... But this is certainly something we can only dream of, <a href="#generic_the_nightly_strikes_back">right</a>?
+</p>
+<h2 id="return_of_the_macro">Back to Macros</h2>
+<p>
+While dreaming about syntax is nice, it doesn't help solving the problem at hand, namely implementing a Free Monad type in Rust. With the new knowledge that it's possible to work around the move of the mapping function in <code>Bind</code> and <code>Functor</code> by using a reference instead of the function itself, it's now actually straightforward to implement those operations for <code>Free&lt;A&gt;</code>. To make this work with the traits from <code>higher</code>, it's enough to move the actual implementation into a separate function that takes <code>&amp;f</code> instead of <code>f</code>, and have the trait function call that one.<br/>
+<code>
+impl&lt;'a,A&gt; Functor&lt;'a,A&gt; for $name&lt;A&gt; {<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = $name&lt;T&gt;;<br/>
+&nbsp;&nbsp;fn fmap&lt;B,F&gt;(self, f: F) -&gt; Self::Target&lt;B&gt; where F: Fn(A) -&gt; B + 'a{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;self.__fmap_impl(&amp;f)<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+<code>Pure</code> is straightforward to implement andd <code>Bind</code> is nearly identical to <code>Functor</code>, so only <code>Apply</code> is left. This one causes troubles though. As we now know, a Free Monad is like a tree, and <code>a.apply(f)</code> <a href="#ugly_apply_drawing">replaces each <code>Pure</code> in <code>f</code> with the Free Monad obtained by calling <code>a.fmap()</code> with the function stored in that <code>Pure</code></a>. This means, that we have to call <code>a.fmap()</code> multiple times, but <code>a.fmap()</code> consumes <code>a</code>... The easy way out is to require that <code>a</code> is <code>Clone</code>. While this isn't the nicest requirement, <code>higher</code> also needs it for its <code>Apply</code> implementation for <code>Vec</code>, so at least in that regard the Free Monad is in good company. Furthermore, there is no real reason that <code>Monad</code> requires <code>Apply</code>. That's just because Haskell has this requirement for historical reasons, not because the maths behind Monads would require it. One could therefore just roll a <code>trait&nbsp;MyOwnMonadWithBlackjackAndHookers&nbsp;: Functor&nbsp;+&nbsp;Bind&nbsp;+&nbsp;Pure</code> and use that one instead of the actual <code>Monad</code> from <code>higher</code>.
+</p>
+<p>
+Another challenge here is that just porting over the <code>Apply</code> source code from Haskell's Free type would cause an insane amount of deep copies. Luckily there is a generic <code>Apply</code> function in <code>higher</code> that one can use: <code>higher::apply::ap(f,a)</code>. This is way better suited for Rust code, because it only makes one deep copy of <code>a</code> per <code>Pure</code> node in <code>f</code>. This function is actually the generic <code>Apply</code> implementation that works for every type that is <code>Bind</code> and <code>Pure</code>.
+</p>
+<p>
+By the way, the deep copies could be eliminated completely be replacing the <code>Box</code> in the type by a shared reference. However, <code>Box</code> has unique ownership, and therefore allows to move out of it if one owns the <code>Box</code> (because <a href="https://manishearth.github.io/blog/2017/01/10/rust-tidbits-box-is-special/"><code>Box</code> is special</a>). Shared references <a href="https://doc.rust-lang.org/std/rc/struct.Rc.html#method.try_unwrap">only allow moving out if the reference count is exactly 1</a>. That means that if we used a shared reference, all <code>Functor</code> and <code>Bind</code> would require <code>Clone</code> too as a fallback if the reference count is not 1. I consider this additional requirement much worse than suboptimal performance in <code>Apply</code>.
+</p>
+<p>
+With this, our macro can now generate Free Monads for any arbitrary Functor. To make it a bit more useable, <code>lift_f(a)</code> and <code>retract(m)</code> are still missing. The function signatures for those are a bit weird, but nothing too bad:<br/>
+<code>
+impl&lt;$generic&gt; $name&lt;$generic&gt;{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;$v fn lift_f(command : &lt;$f as $crate::higher::Functor&lt;Self&gt;&gt;::Target&lt;$generic&gt;) -&gt; Self{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;use $crate::higher::Functor;<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Self::Free(Box::new(command.fmap(|a| Self::Pure(a))))<br/>
+&nbsp;&nbsp;}<br/>
+<br/>
+&nbsp;&nbsp;$v fn retract&lt;'a&gt;(self) -&gt; &lt;$f as $crate::higher::Bind&lt;'a,Self&gt;&gt;::Target&lt;$generic&gt;<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;where $f : $crate::higher::Monad&lt;'a,Self&gt;,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;$f as $crate::higher::Bind&lt;'a,Self&gt;&gt;::Target&lt;$generic&gt; : $crate::higher::Pure&lt;$generic&gt;<br/>
+&nbsp;&nbsp;{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;use $crate::higher::{Bind, Pure};<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;match self {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$name::Pure(a) =&gt; {&lt;$f as $crate::higher::Bind&lt;'a,Self&gt;&gt;::Target::&lt;$generic&gt;::pure(a)},<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$name::Free(m) =&gt; {m.bind(|a| a.retract())}<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<h2 id="lifetimes_the_solution_and_cause_of_all_rust_problems">Liftimes enter the room</h2>
+<p>
+And with that, everything was looking great. Except that lifetimes would like to have a word... In our use case of domain specific languages, we have to deal with continuation functions, for which a Functor needs to use function composition to remain lawful. And this means the output of <code>Functor</code> and <code>Bind</code> can reference the mapping function itself. In other words, lifetime annotations are needed, and the trick we used above to work around the need to copy the mapping function doesn't work in that case. Imposing <code>Clone</code> is also not possible, because the mapping functions are not known at the <code>impl</code>-level...
+</p>
+<p>
+Luckily we can just use shared references here (remember, a Free Monad is tree-like, so there are no reference cycles possible). So, instead of <code>__fmap_impl(self, f : &amp;F)</code> we can simply use <code>__fmap_impl(self, f : Rc&lt;F&gt;)</code> and everything is good again.
+</p>
+<p>
+Of course this is now an understatement of the actual amount of work that went into making the macro lifetime-aware, and I'm pretty certain that there are still bugs hidden somewhere in that code.
+</p>
+<p>
+But long story short, the resulting code is now available in <a href="https://github.com/soulsource/higher-free-macro/">the higher-free-macro project on github</a>.
+</p>
+<h2 id="generic_the_nightly_strikes_back">A generic <acronym title="Proof Of Concept">POC</acronym> in Nightly Rust</h2>
+<p>
+Turns out, the dream mentioned <a href="#generic_a_new_hope">above</a> started to became reality a few days ago. <a href="https://github.com/rust-lang/rust/issues/108185">Non-Lifetime binders</a> were merged to Nightly Rust.
+</p>
+<p>
+This awesome new language feature allows us to write a <a href="https://play.rust-lang.org/?version=nightly&amp;mode=debug&amp;edition=2021&amp;gist=1af5b0970cfe400a9245483f84080b8f">generic Free Monad</a>. The linked playground compiles just fine with the nightly toolchain. It is a bit clunky to use, as the cycle in the <code>Clone</code> implementation needs to be broken by hand, so <code>#[derive(Clone)]</code> is not an option... However, the general idea is working.
+</p>
+<p>
+The usage of the <code>enum Free&lt;A,F&gt;</code> on the linked playground is straightforward. <code>A</code> is the type of the value in <code>Free::Pure</code>, and <code>F</code> is the <code>Functor</code> the Free Monad is based on, specialized for the <code>!</code> <a href="https://github.com/rust-lang/rust/issues/35121">Never Type</a>. For instance, to get a Free Monad for a Functor <code>TestFunctor&lt;A&gt;</code>, one could simply use the type <code>Free&lt;A,TestFunctor&lt;!&gt;&gt;</code>. To make it a Monad, one also has to convince the compiler, that <code>Clone</code> is working. Deriving it currently does not work. See the Playground for details.
+</p>
+<h2 id="usage_example">A usage example for macro based implementation</h2>
+<p>
+Unless someone finds a clever way to do a generic implementation in Stable Rust, we are stuck with the macro-based one though. However, it's actually quite convenient to use.
+</p>
+<p>
+In order to declare a new Free Monad type for our Functor type, all we need to do is to call the <code>free!()</code> macro with the right parameters. Let's look at an example. Here <code>FreeSaturday&lt;'a,A&gt;</code> is a <code>Functor&lt;'a,A&gt;</code>: <code>free!(pub FreeSaturday&lt;'a, A&gt;, Saturday&lt;'a,FreeSaturday&lt;'a, A&gt;&gt;);</code>. The <code>pub</code> is optional, you can add it if you want your type to be public. <code>FreeSaturday&lt;'a, A&gt;</code> is the Functor. It can have multiple lifetimes, but it's important that the <em>first</em> lifetime is the one that will be used in the trait implementations. The <code>A</code> is the type that will be in the <code>Pure</code> variant. As last parameter you need to supply the <code>Functor</code>, specialized for the to-be-created Free Monad type. This is used to determine where the Free Monad's type- and lifetime parameters actually go in the Functor type.
+</p>
+<p>
+The above is still rather dry. Let's have a quick glimpse at a full <acronym title="embedded Domain Specific Language">eDSL</acronym> example now, to see how we can use <a href="https://docs.rs/higher/latest/higher/macro.run.html">do-notation</a> to plan a nice Saturday evening.
+</p>
+<p>
+We start with the usual boilerplate, and then define our Functor, <code>Saturday</code>. It has two commands for our language. Either we can go to a different bar, or drink a beer at the location we are at right now. Both commands have a continuation function, <code>Next</code>. For the use case as <acronym title="embedded Domain Specific Language">eDSL</acronym> we want these continuation functions to be pure. In Nightly rust, we could use <a href="https://github.com/rust-lang/rust/issues/67792">const_trait_impl</a> and <a href="https://github.com/rust-lang/rust/issues/106003">const_closures</a> to actually enforce this. Since none of these features are stable yet, for now we just have to be careful to not write impure code by accident... In any case, under the assumption that the continuation function is pure, it can be replaced by its return value, if it doesn't take any parameters. This is for instance the case for <code>GoToBar</code>. Here, <code>Next</code> is just a value, not a function. In the case <code>DrinkABeer</code> the return value of the continuation function depends on the <code>BeerQuality</code> at the current bar. This value is only known when we actually taste the beer there (as in: cause a side-effect). So, our (hopefully) pure Free Monad needs to store an actual <code>Fn(BeerQuality)-&gt;Next</code>. We do not want this function to show up in the type signature though, because that would make it quite impossible to implement <code>Functor</code> for <code>Saturday</code>. Also, we want to make <code>Saturday</code> cloneable, to allow <code>Apply</code> to be implemented for it. That's why the actual type of the continuation will be a shared reference to a trait object.
+</p>
+<p>
+<code>
+use std::rc::Rc<br/>
+use higher_free_macro::free;<br/>
+use higher::*;<br/>
+<br/>
+#[derive(Debug, Clone, PartialEq)]<br/>
+enum BeerQuality{<br/>
+&nbsp;&nbsp;Lukewarm,<br/>
+&nbsp;&nbsp;Refreshing<br/>
+}<br/>
+<br/>
+#[derive(Clone)]<br/>
+enum Saturday&lt;'a, Next&gt;{<br/>
+&nbsp;&nbsp;GoToBar{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;name_of_bar : &amp;'a str,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;next : Next<br/>
+&nbsp;&nbsp;},<br/>
+&nbsp;&nbsp;DrinkABeer (Rc&lt;dyn Fn(BeerQuality)-&gt;Next + 'a&gt;) //Rc, because it's cloneable, dyn to keep it out of the type signature.<br/>
+}
+</code>
+</p>
+<p>
+When implementing <code>Functor</code> for <code>Saturday</code> we need to keep the <a href="https://wiki.haskell.org/index.php?title=Functor&amp;oldid=64838#Functor_Laws">Functor Laws</a> in mind. Sadly we can't just use the <code>#[derive(Functor)]</code> macro from "higher", as our <code>Saturday</code> is too complex for it to work. Otherwise this would be a trivial task... But well, here it's actually rather easy too. For <code>GoToBar</code> we can just map eagerly, because we are dealing with values. For <code>DrinkABeer</code>, where we evaluate the continuation lazily (as in: during interpretation of the Free Monad), we instead do function composition.
+</p>
+<p>
+<code>
+impl&lt;'a, Next : 'a&gt; Functor&lt;'a, Next&gt; for Saturday&lt;'a, Next&gt;{<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = Saturday&lt;'a, T&gt;;<br/>
+<br/>
+&nbsp;&nbsp;fn fmap&lt;B, F&gt;(self, f: F) -&gt; Self::Target&lt;B&gt;<br/>
+&nbsp;&nbsp;where F: Fn(Next) -&gt; B + 'a {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;match self {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Saturday::GoToBar { name_of_bar, next } =&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Saturday::GoToBar { name_of_bar, next: f(next) }<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Saturday::DrinkABeer(continuation) =&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Saturday::DrinkABeer(Rc::new(move |x| f(continuation(x))))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+Next the magic happens. We call the <code>free!()</code> macro to generate the Free Monad <code>FreeSaturday</code>, based on the <code>Saturday</code> Functor.
+</p>
+<p>
+<code>
+free!(FreeSaturday&lt;'a, A&gt;, Saturday&lt;'a,FreeSaturday&lt;'a, A&gt;&gt;);
+</code>
+</p>
+<p>
+It's convenient to have simple functions to create each <code>Free</code> variant, containing a <code>Pure</code> as continuation. These functions are the &quot;commands&quot; we run in do-notation later.
+</p>
+<p>
+<code>
+fn go_to_bar(s : &amp;str) -&gt; FreeSaturday&lt;'_, ()&gt;{<br/>
+&nbsp;&nbsp;FreeSaturday::lift_f(<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;Saturday::GoToBar { name_of_bar: s, next: () }<br/>
+&nbsp;&nbsp;)<br/>
+}<br/>
+fn drink_a_beer&lt;'a&gt;() -&gt; FreeSaturday&lt;'a, BeerQuality&gt;{<br/>
+&nbsp;&nbsp;FreeSaturday::lift_f(<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;Saturday::DrinkABeer(<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Rc::new(std::convert::identity)<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;)<br/>
+&nbsp;&nbsp;)<br/>
+}
+</code>
+</p>
+<p>
+Now we have all ingredients ready to actually write down the plan for a nice evening. We do that using, well, do-notation. In "higher" it's called <a href="https://docs.rs/higher/latest/higher/macro.run.html"><code>run!{}</code></a>. It's worth checking out the <a href="https://github.com/bodil/higher/blob/64bc195bca9b79c25917b249c0b269855b240e51/prelude/src/lib.rs#L150">source code of run!{}</a>, because it shows how elegant declarative macros in Rust can be.
+</p>
+<p>
+Here we can see the signature of <code>fn drink_a_beer&lt;'a&gt;() -&gt; FreeSaturday&lt;'a, BeerQuality&gt;</code> in action. As noted <a href="#consequences_for_dsls">above</a>, in order to consume input from the interpreter later, we can build continuation functions that take an input parameter. Furthermore, the helper <code>drink_a_beer()</code> returns <code>FreeSaturday&lt;'a, BeerQuality&gt;</code>, meaning it has a <em>return value</em> of type <code>BeerQuality</code>, for which we can bind an identifier with the <code>&lt;=</code> operator of <code>run!{}</code>. It is worth noting that, while in this case the return value is from a side effect the interpreter has to deal with, that's a pattern that can also be used for methods within the <acronym title="embedded Domain Specific Language">eDSL</acronym>.
+</p>
+<p>
+In a perfect world, we would make this a <code>const</code> function, just like we would make the continuation functions in the Functor const - to rule out any side effects. As far as I know this is not possible in Stable Rust, so we have to make sure everything in here is pure by hand...
+</p>
+<p>
+The plan for the evening is by the way rather simple: If we get served a lukewarm beer, we stop drinking.
+</p>
+<p>
+<code>
+fn a_nice_evening() -&gt; FreeSaturday&lt;'static,()&gt;{<br/>
+&nbsp;&nbsp;run! {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;drink_a_beer(); //at home. Don't care if lukewarm.<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;go_to_bar(&quot;Sunken Norwegian&quot;);<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;x &lt;= drink_a_beer();<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;if x != BeerQuality::Lukewarm { run! {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;drink_a_beer(); //alredy know if the beer here was lukewarm or not.<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;go_to_bar(&quot;Le Rieur Sanglier&quot;);<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x &lt;= drink_a_beer();<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if x != BeerQuality::Lukewarm { run! {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;drink_a_beer();<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;go_to_bar(&quot;Coyote Ugly&quot;);<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x &lt;= drink_a_beer();<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if x != BeerQuality::Lukewarm { run! {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;drink_a_beer();<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;yield ()<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}} else{ run! { yield () } }<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}} else{ run! { yield () } }<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}} else{ run! { yield () } }<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+We can actually prove that the return value of <code>a_nice_evening()</code> is a <code>Monad</code>:
+</p>
+<p>
+<code>
+fn _test_if_a_nice_evening_is_monad() -&gt; impl Monad&lt;'static, ()&gt;{<br/>
+&nbsp;&nbsp;a_nice_evening()<br/>
+}
+</code>
+</p>
+<p>
+Last, but not least, here we have an example interpreter that actually runs the above plan. This is now the location, where we actually know if we get lukewarm beer.
+</p>
+<p>
+This interpreter just counts how many beers we consumed at each bar. There isn't much notable about it, except that it calls <code>get_beer_quality_of_location()</code> in case it encounters a <code>DrinkABeer</code> command, to actually run the continuation function.
+</p>
+<p>
+<code>
+fn count_beers_consumed_per_bar(evening : FreeSaturday&lt;()&gt;) -&gt; Vec&lt;(&amp;str, u32)&gt;{<br/>
+&nbsp;&nbsp;//let's assume get_beer_quality_of_location() has side effects.<br/>
+&nbsp;&nbsp;fn get_beer_quality_of_location(l : &amp;str) -&gt; BeerQuality {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;if l == &quot;Le Rieur Sanglier&quot; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;BeerQuality::Lukewarm<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;} else {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;BeerQuality::Refreshing<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;fn interpret_evening_step&lt;'a, 'b : 'a&gt;(<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;l : &amp;'b str,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;mut v : Vec&lt;(&amp;'a str, u32)&gt;,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;saturday : FreeSaturday&lt;'b,()&gt;<br/>
+&nbsp;&nbsp;) -&gt; Vec&lt;(&amp;'a str, u32)&gt;{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;match (l,&amp;*v,saturday){<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(_,_,FreeSaturday::Pure(_)) =&gt; v,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(l, [.., (lo,co)], FreeSaturday::Free(f)) if *lo == l=&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;match *f {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Saturday::GoToBar { name_of_bar, next } =&gt;<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpret_evening_step(name_of_bar, v, next),<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Saturday::DrinkABeer(next) =&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;v.last_mut().unwrap().1 = co+1;<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpret_evening_step(l, v, next(get_beer_quality_of_location(l)))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(l, _, FreeSaturday::Free(f)) =&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;match *f {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Saturday::GoToBar { name_of_bar, next } =&gt;<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpret_evening_step(name_of_bar, v, next),<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Saturday::DrinkABeer(next) =&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;v.push((l,1));<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpret_evening_step(l, v, next(get_beer_quality_of_location(l)))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;interpret_evening_step(&quot;Home&quot;, Vec::new(), evening)<br/>
+}<br/>
+</code>
+</p>
+<hr/>
+<h4 id="navigation">Navigation</h4>
+<p>
+<a href="/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml">Previous: Dosbox with MIDI on the Steam Deck</a>
+<a href="/index.xhtml">Home</a>
+</p>
+</body>
+</html>
