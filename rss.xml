@@ -47,7 +47,7 @@ With that in mind, we can start hacking:<br/>
 </code>
 </p>
 <p>
-Now, we hit the problem mentioned before. How are we supposed to express the type that <code>G</code> becomes in the <acronym title="Generic Associated Type">GAT</acronym>? Trying to write it by hand we end up with <code>type&nbsp;Target&lt;T&gt;&nbsp;=&nbsp;Free&lt;T,Free&lt;T,Free&lt;Free&lt;T,...&gt;&gt;&gt;&gt;</code>. However, we could try to refer to <code>Self</code> to escape this: <code>type&nbsp;Target&lt;T&gt;&nbsp;=&nbsp;Free&lt;T,G::Target&lt;Self::Target&lt;T&gt;&gt;&gt;</code>. This looks promising, except for the little issue that the compiler tries to replace it with <code>type&nbsp;Target&lt;T&gt;&nbsp;=&nbsp;Free&lt;T,Free&lt;T,Free&lt;Free&lt;T,...&gt;&gt;&gt;&gt;</code> again...
+Now, we hit the problem mentioned before. How are we supposed to express the type that <code>G</code> becomes in the <acronym title="Generic Associated Type">GAT</acronym>? Trying to write it by hand we end up with <code>type&nbsp;Target&lt;T&gt;&nbsp;= Free&lt;T,Free&lt;T,Free&lt;T,Free&lt;T,...&gt;&gt;&gt;&gt;</code>. However, we could try to refer to <code>Self</code> to escape this: <code>type&nbsp;Target&lt;T&gt;&nbsp;=&nbsp;Free&lt;T,G::Target&lt;Self::Target&lt;T&gt;&gt;&gt;</code>. This looks promising, except for the little issue that the compiler tries to replace it with <code>type&nbsp;Target&lt;T&gt;&nbsp;= Free&lt;T,Free&lt;T,Free&lt;T,Free&lt;T,...&gt;&gt;&gt;&gt;</code> again...
 </p>
 <p>
 Obviously this leads nowhere. <a href="https://doc.rust-lang.org/reference/types.html#recursive-types">Type aliases in Rust cannot be recursive.</a> Therefore the type signature of the Free Monad type has to look different.
