@@ -47,7 +47,7 @@ With that in mind, we can start hacking:<br/>
 </code>
 </p>
 <p>
-Now, we hit the problem mentioned before. How are we supposed to express the type that <code>G</code> becomes in the <acronym title="Generic Associated Type">GAT</acronym>? Trying to write it by hand we end up with <code>type&nbsp;Target&lt;T&gt;&nbsp;= Free&lt;T,Free&lt;T,Free&lt;T,Free&lt;T,...&gt;&gt;&gt;&gt;</code>. However, we could try to refer to <code>Self</code> to escape this: <code>type&nbsp;Target&lt;T&gt;&nbsp;=&nbsp;Free&lt;T,G::Target&lt;Self::Target&lt;T&gt;&gt;&gt;</code>. This looks promising, except for the little issue that the compiler tries to replace it with <code>type&nbsp;Target&lt;T&gt;&nbsp;= Free&lt;T,Free&lt;T,Free&lt;T,Free&lt;T,...&gt;&gt;&gt;&gt;</code> again...
+Now, we hit the problem mentioned before. How are we supposed to express the type that <code>G</code> becomes in the <acronym title="Generic Associated Type">GAT</acronym>? Trying to write it by hand we end up with <code>type&nbsp;Target&lt;T&gt;&nbsp;= Free&lt;T, G::Target&lt;Free&lt;T, G::Target&lt;Free&lt;T, G::Target&lt;Free&lt;T,...&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code>. However, we could try to refer to <code>Self</code> to escape this: <code>type&nbsp;Target&lt;T&gt;&nbsp;= Free&lt;T, G::Target&lt;Self::Target&lt;T&gt;&gt;&gt;</code>. This looks promising, except for the little issue that the compiler tries to replace it with <code>type&nbsp;Target&lt;T&gt;&nbsp;= Free&lt;T, G::Target&lt;Free&lt;T, G::Target&lt;Free&lt;T, G::Target&lt;Free&lt;T,...&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code> again...
 </p>
 <p>
 Obviously this leads nowhere. <a href="https://doc.rust-lang.org/reference/types.html#recursive-types">Type aliases in Rust cannot be recursive.</a> Therefore the type signature of the Free Monad type has to look different.
@@ -337,6 +337,36 @@ This structure can be used to express embedded domain specific languages in a ra
 	<li>Return values are stored in <code>Pure</code> nodes. That way, the next command that gets appended with <code>bind()</code> can take that value as parameter. When using do-notation, it can be assigned to a name, and commands further down can refer to it.</li>
 	<li>To accept input from the interpreter of the <acronym title="Embedded Domain Specific Language">eDSL</acronym>, <code>Free</code> nodes can contain a continuation function that takes that value as input parameter, and returns the remainder of the tree that depends on the input. This will get more clear once we get <a href="#usage_example">to an actual example.</a></li>
 </ul>
+<h4 id="do_notation">How does do-notation fit into this picture?</h4>
+<p>
+In case you don't know do-notation, a short reminder how it works. It's syntax sugar over chained <code>bind()</code> calls. Using the syntax from <a href="https://docs.rs/higher/latest/higher/macro.run.html">higher's <code>run!()</code> macro</a>, it works like this:<br/>
+<code>
+	run!{<br/>
+	&nbsp;&nbsp;a;<br/>
+	&nbsp;&nbsp;b;<br/>
+	&nbsp;&nbsp;...<br/>
+	}<br/>
+</code>
+will be translated into<br/>
+<code>
+	a.bind(move |_| { b.bind(move |_| { ... } ) } );<br/>
+</code>
+and values can be bound to names like this:<br/>
+<code>
+	run!{<br/>
+	&nbsp;&nbsp;x &lt;= a;<br/>
+	&nbsp;&nbsp;b;<br/>
+	&nbsp;&nbsp;...<br/>
+	}<br/>
+</code>
+which will be converted into<br/>
+<code>
+	a.bind(move |x| { b.bind(move |_| { ... } ) } );<br/>
+</code>
+</p>
+<p>
+This is what makes the Free Monad so awesome for <acronym title="Embedded Domain Specific Language">eDSL</acronym> usage. You can write the script in your <acronym title="Embedded Domain Specific Language">eDSL</acronym> within do-notation. Every new statement gets appended after the previous one. In the end you build a data structure, but it feels like just writing an imperative program. Branching can be expressed too, because, <a href="#ugly_bind_drawing">as we have seen</a>, <code>bind()</code> appends the new code instead of every Pure node. Since desugaring creates nested closures, you can refer to previously created names in following statements. Also, the individual &quot;statements&quot; are actually functions returning a <code>Free</code>, so you can use syntax from the host-language (in this case Rust) in them. To see it in action, check the <a href="#usage_example">example</a> below.
+</p>
 <h3 id="return_of_the_maths">One word about mathematics</h3>
 <p>
 I know, I wrote that this ignores all mathematical details, but one thing I have to mention: By its very definition, a <a href="https://en.wikipedia.org/wiki/Free_object">Free Monad</a> obays the <a href="https://wiki.haskell.org/Monad_laws">Monad laws</a> as long as the Functor it is based on obeys the <a href="https://wiki.haskell.org/index.php?title=Functor&amp;oldid=64838#Functor_Laws">Functor laws</a>. In other words, for our <acronym title="Embedded Domain Specific Language">eDSL</acronym> use case, we really need to make sure our Functor is actually a lawful Functor, not only something just implementing the trait.
@@ -387,7 +417,7 @@ While dreaming about syntax is nice, it doesn't help solving the problem at hand
 </code>
 </p>
 <p>
-<code>Pure</code> is straightforward to implement andd <code>Bind</code> is nearly identical to <code>Functor</code>, so only <code>Apply</code> is left. This one causes troubles though. As we now know, a Free Monad is like a tree, and <code>a.apply(f)</code> <a href="#ugly_apply_drawing">replaces each <code>Pure</code> in <code>f</code> with the Free Monad obtained by calling <code>a.fmap()</code> with the function stored in that <code>Pure</code></a>. This means, that we have to call <code>a.fmap()</code> multiple times, but <code>a.fmap()</code> consumes <code>a</code>... The easy way out is to require that <code>a</code> is <code>Clone</code>. While this isn't the nicest requirement, <code>higher</code> also needs it for its <code>Apply</code> implementation for <code>Vec</code>, so at least in that regard the Free Monad is in good company. Furthermore, there is no real reason that <code>Monad</code> requires <code>Apply</code>. That's just because Haskell has this requirement for historical reasons, not because the maths behind Monads would require it. One could therefore just roll a <code>trait&nbsp;MyOwnMonadWithBlackjackAndHookers&nbsp;: Functor&nbsp;+&nbsp;Bind&nbsp;+&nbsp;Pure</code> and use that one instead of the actual <code>Monad</code> from <code>higher</code>.
+<code>Pure</code> is straightforward to implement and <code>Bind</code> is nearly identical to <code>Functor</code>, so only <code>Apply</code> is left. This one causes troubles though. As we now know, a Free Monad is like a tree, and <code>a.apply(f)</code> <a href="#ugly_apply_drawing">replaces each <code>Pure</code> in <code>f</code> with the Free Monad obtained by calling <code>a.fmap()</code> with the function stored in that <code>Pure</code></a>. This means, that we have to call <code>a.fmap()</code> multiple times, but <code>a.fmap()</code> consumes <code>a</code>... The easy way out is to require that <code>a</code> is <code>Clone</code>. While this isn't the nicest requirement, <code>higher</code> also needs it for its <code>Apply</code> implementation for <code>Vec</code>, so at least in that regard the Free Monad is in good company. Furthermore, there is no real reason that <code>Monad</code> requires <code>Apply</code>. That's just because Haskell has this requirement for historical reasons, not because the maths behind Monads would require it. One could therefore just roll a <code>trait&nbsp;MyOwnMonadWithBlackjackAndHookers&nbsp;: Functor&nbsp;+&nbsp;Bind&nbsp;+&nbsp;Pure</code> and use that one instead of the actual <code>Monad</code> from <code>higher</code>.
 </p>
 <p>
 Another challenge here is that just porting over the <code>Apply</code> source code from Haskell's Free type would cause an insane amount of deep copies. Luckily there is a generic <code>Apply</code> function in <code>higher</code> that one can use: <code>higher::apply::ap(f,a)</code>. This is way better suited for Rust code, because it only makes one deep copy of <code>a</code> per <code>Pure</code> node in <code>f</code>. This function is actually the generic <code>Apply</code> implementation that works for every type that is <code>Bind</code> and <code>Pure</code>.
@@ -620,6 +650,20 @@ This interpreter just counts how many beers we consumed at each bar. There isn't
 	&nbsp;&nbsp;interpret_evening_step(&quot;Home&quot;, Vec::new(), evening)<br/>
 	}<br/>
 </code>
+</p>
+<h3 id="performance">Performance considerations</h3>
+<p>
+Apart from the already mentioned limitation that (the luckily not too often needed) <code>Apply</code> performs deep copies, there is another thing that has to be highlighted: The <code>Free</code> type contains a <code>Box</code>. This means that a complex Free Monad also has high memory complexity. This means that one should really avoid using it in performance-critical code.
+</p>
+<p>
+If combined with continuation functions, a typical use case in <acronym title="embedded Domain Specific Language">eDSL</acronym>s, the complexity increases even further, both memory-wise, and CPU-wise, because the continuations need to be run during interpretation.
+</p>
+<p>
+It is also worth noting, that while building the Free Monad it's not really possible to avoid recursion. This means that building very complicated Free Monads might run into stack space limits. It's also not always predictable how deep the call stack gets if continuation functions and user-data are involved. Luckily the interpreter itself can usually be written without explicit recursions.
+</p>
+<h3 id="plans">Plans for the future</h3>
+<p>
+The next steps with this code are now to document it, and to add integration tests that also serve as examples. Once those two things are done, I'm planning to upload it to crates.io, even though it has its limitations.
 </p>
 ]]></description><guid>https://www.grois.info/posts/2023-03/2023-03-11-adventures-with-free-monads-and-higher.xhtml</guid><pubDate>Sat, 11 Mar 2023 23:20:00 +0100</pubDate></item><item><title>Dosbox with MIDI on the Steam Deck</title><link>https://www.grois.info/posts/2023-02/2023-02-02-dosbox-with-midi-on-the-steam-deck.xhtml</link><description><![CDATA[<h2 id="goal">Goal of this guide</h2>
 <p>
