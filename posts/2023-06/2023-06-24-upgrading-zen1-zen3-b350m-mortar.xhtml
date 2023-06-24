@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+<head>
+<title>Andi's Blog: Upgrading from Zen 1 to Zen 3 with a B350M Mortar mainboard</title>
+<link rel="top" title="Home" href="/index.xhtml"/>
+<link rel="prev" title="Adventures with Free Monads and higher" href="/posts/2023-03/2023-03-11-adventures-with-free-monads-and-higher.xhtml"/>
+<link rel="canonical" href="https://www.grois.info/posts/2023-06/2023-06-24-upgrading-zen1-zen3-b350m-mortar.xhtml"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+</head>
+<body>
+<h1>Upgrading from Zen 1 to Zen 3 with a B350M Mortar mainboard</h1>
+<h2>Motivation</h2>
+<p>
+My home PC started to feel a bit dated this year, so over the last few months I started upgrading it. The first upgrade was the GPU, where I went from an AMD&nbsp;Rx480 to an AMD&nbsp;RX&nbsp;6700&nbsp;XT. I won't go into details about that upgrade here, because once I get started talking about Linux GPU drivers, which where the main reason I bought an AMD card, I won't stop any more. Then, about a week ago, I finally got fed up with ending up in swapping hell every time I was compiling WebKit (and on Gentoo Linux that happens quite frequently...), so I bought another 16 GB of RAM, bringing the system to a total of 32 GB.
+</p>
+<p>
+Of course I talked to my coworkers about the topic of upgrading my PC, and they were surprised that I was still running a Ryzen&nbsp;7&nbsp;1700X CPU. They suggested that I should also upgrade the CPU, just that the GPU isn't held back by a slow processor. While the 1700X never actually felt slow for me (the games I play are either very light on the CPU and heavy on the GPU, or <i>vice versa</i>), and compiling on Gentoo had been limited by RAM, not the CPU, their remarks made me look at the current CPU prices. This is of course only speculation, but it seems that currently the AM4 processor prices are in the sweet spot where supply is still high, but demand is shifting towards AM5 processors, as people building a new computer will probably prefer the newer socket for later upgradability.
+</p>
+<p>
+There were two reasons I hadn't considered upgrading the CPU before. One was just my own ignorance related to prices. My 1700X had cost more than &euro;700, and I assumed that comparable processors would still cost about the same. The other reason is the one why I'm writing this blog post. My MSI&nbsp;Mortar&nbsp;B350M mainboard requires an update to its firmware in order to support newer CPUs, and I somehow had it stuck in my head that this update breaks compatibility with my old CPU, what made it feel very risky.
+</p>
+<p>
+What convinced me in the end was mostly the Fear of Missing Out. At some point the supply of AM4 CPUs will get lower, and I expect their prices to go up then. Also, getting a new CPU now might make the PC be good enough for another 5 years. Another valuable input was by a coworker who also had a B350 mainboard, though not the same I have, who also upgraded the CPU without any issues.
+</p>
+<h2>CPU selection</h2>
+<p>
+While it was clear from the beginning that I would not go below 8 cores with SMT, this still leaves a broad choice of upgrade options. The <a href="https://www.msi.com/Motherboard/B350M-MORTAR/support#cpu">MSI&nbsp;Mortar&nbsp;B350M board supports</a> also higher core-count Zen&nbsp;3 chips, including the X3D models with comparably large L3 caches. To narrow my CPU choice down, I added additional constraints, namely that the <acronym title="Thermal Design Power">TDP</acronym> of the new chip should not exceed the one of the old CPU. While my cooler, an Alpenf&ouml;hn&nbsp;Ben&nbsp;Nevis, could <a href="https://www.alpenfoehn.de/produkte/cpu-kuehler/ben-nevis-rev-b">easily handle the thermal output</a> of all Zen&nbsp;3 CPUs, I wasn't that sure about my power supply, a be&nbsp;quiet!&nbsp;System&nbsp;Power&nbsp;8 600W, which I was already driving to the limit with the new GPU.
+</p>
+<p>
+The remaining options were either the Ryzen&nbsp;7&nbsp;5700G or the Ryzen&nbsp;7&nbsp;5700X. Sadly, the 5800X3D has a higher <acronym title="Thermal Design Power">TDP</acronym>. Since I have a dedicated GPU already, the 5700G wasn't really interesting for me, so the choice had been made. As an additional bonus, the 5700X currently costs even less than &euro;200.
+</p>
+<h2>Upgrade preparations</h2>
+<h3>Firmware Download</h3>
+<p>
+As noted before, the MSI&nbsp;Mortar&nbsp;B350M requires an updated firmware, which the manufacturer still considers Beta, in order to run Zen&nbsp;3 based processors. Before making any bigger changes to a computer's hardware, it's always a good idea to have a look at the mainboard manufacturer's <a href="https://www.msi.com/Motherboard/B350M-MORTAR/support#cpu">hardware compatibility list</a>, which in this case clearly states that the 5700X needs the &quot;latest Beta BIOS&quot; (side note: it's somewhat funny that mainboard manufacturers still call their firmware <acronym title="Basic Input/Output System">BIOS</acronym>, though it has been using the <acronym title="Unified Extensible Firmware Interface">UEFI</acronym> for years...).
+</p>
+<p>
+Currently, the latest Beta version of the firmware for the B350M&nbsp;Mortar is 7A37v1O7, which can be found easily enough on the <a href="https://www.msi.com/Motherboard/B350M-MORTAR/support#bios">board's support website</a>. After downloading, it has to be unzipped onto a USB drive. Just to be on the safe side, I repartitioned the USB drive first, using an <acronym title="Master Boot Record">MBR</acronym> partition table and a single primary FAT32 partition.
+</p>
+<h3>Backups</h3>
+<p>
+Before I dared to touch the system's firmware, or even the hardware itself, I did what every reasonable PC user should do in such a situation (and in general, every few days): I made a backup. For this I'm using the shell script presented in the <a href="https://developer.ibm.com/tutorials/au-spunix_rsync/#back-up-your-data-with-rsync">Speaking UNIX</a> tutorial.
+</p>
+<h3>Gentoo Linux specific: <code>CFLAGS</code></h3>
+<p>
+After making sure that everything of importance had been stored on an external HDD, I went ahead with preparing my system for a CPU change. I had been compiling my Gentoo installation using the <code>march=znver1</code> compiler option. While I was quite confident that a Zen&nbsp;3 CPU could run any code optimized for Zen&nbsp;1, I was not absolutely certain, so I changed my <code>CFLAGS</code> such that <code>march=x86-64</code> was used and recompiled the <code>@system</code> package list and the kernel using that setting. After the CPU upgrade it turned out that this was indeed not needed and just a waste of time and electricity... However, in general it's a good safety measure to do when upgrading CPU, because sometimes instruction set extensions that were present on older CPUs are no longer available on newer ones. for instance, the 3DNow! extension was available on Athlon CPUs, but not on Bulldozer, and on my old PC, where I made exactly such an upgrade, I would have been locked out of my system if I hadn't recompiled <code>@system</code> without 3DNow! first.
+</p>
+<h3>Fallback Options</h3>
+<p>
+It's always a good idea to have some fallback options available if anything during such an update fails. I always keep a <a href="https://www.system-rescue.org/">System Rescue</a> CD on my table (it still fits on a CD, just not on the usual 700 MB ones), in case I have to restore some boot settings, or need to access my system without actually running any of its software. I very rarely need it (I think, twice in the last 5 years - once because I messed up the boot settings, and once because I misunderstood a Gentoo Linux News post and lost access to the partitions that use <a href="https://en.wikipedia.org/wiki/Dm-cache">dm-cache</a>), but when it's needed, it's good to have it.
+</p>
+<p>
+I'd also recommend to have an installation medium of one's operating system of choice at hand, as a last resort option if everything else fails...
+</p>
+<h3>Firmware Update</h3>
+<p>
+This was the part I was dreading most. While the only thing that was explicitly stated on the firmware download page was that Bristol Ridge APUs (<a href="https://en.wikipedia.org/wiki/Excavator_(microarchitecture)">Excavator Architecture</a>) are no longer supported in the Beta firmware, I was uncertain if those were the only chips that would no longer boot with the current firmware, or if the first generation of Ryzen chips would be affected as well. A full list of supported chips of each firmware version would have helped me greatly here...
+</p>
+<p>
+The actual update using the USB drive prepared before and the firmware's M-Flash mode available from the firmware configuration screen (as explained in the mainboard's user manual) went surprisingly smooth. The installation didn't take long, and after it finished, the system booted up just fine with the Ryzen&nbsp;1700X chip still installed.
+</p>
+<p>
+This was a positive surprise for another reason too. I did not expect that the firmware upgrade would retain all the boot settings. My Linux install is not using a boot manager, but rather the kernel's <acronym title="Extensible Firmware Interface">EFI</acronym> Stub functionality and a manually set up <acronym title="Extensible Firmware Interface">EFI</acronym> boot entry. To my surprise the boot config was still working fine after the upgrade.
+</p>
+<h3>Hardware Change</h3>
+<p>
+Replacing the CPU sounded easy enough. Just remove the heatsink, open the lever, take the old CPU out, put the new CPU in (minding correct orientation, meaning, that the little arrow on the CPU should point in the same direction as the little arrow on the socket), close the lever, stick some thermal grease on, mount the heatsink, done.
+</p>
+<p>
+Just that my heatsink had different plans. Watching a <a href="https://www.youtube.com/watch?v=oWO8vhgjw4E">video of someone else unmount it</a> makes it look easy. However I had made two mistakes. First I had mounted it in such a way that the ledge one should press down and pull on was facing away from the GPU. I had thought, back then, that this might make it possible to remove the cooler without unmounting the GPU first. Second, I had attempted to remove the cooler without first unmounting the mainboard from the PC case... My bloody knuckles confirm the stupidity of those ideas.
+</p>
+<p>
+In the end I gave up, unplugged everything from the mainboard, and took it out of the PC case. Having the board on a solid surface, and with some help from my wife, I finally managed to open the clip that held the cooler in place.
+</p>
+<p>
+The thermal paste I had used when mounting the old CPU (be&nbsp;quiet!&nbsp;DC1) was still kinda liquid, so separating the CPU and the heatsink was trivial, as was the removal of the remaining thermal paste from both parts.
+</p>
+<p>
+The exchange of the CPU went exactly as described above. Opening the lever, taking the old CPU out, placing the new one matching the orientation arrows, and closing the lever again. Afterwards I noticed that the MSI&nbsp;B350M&nbsp;Mortar also has a marking on the board itself, that highlights the edge of the CPU socket that has the arrow.
+</p>
+<p>
+While I still had some thermal grease left from 5 years ago, it didn't look trustworthy any more. I'm not sure what I did wrong, but the grease in the package had partially dried, so I bought a new syringe full with way more grease than I could use... The DC1 was no longer available, but the be&nbsp;quiet!&nbsp;DC2 has similar specs, and since the <acronym title="Thermal Design Power">TDP</acronym> of the old and new CPU is about the same too, I expect that the DC2 will do a nice job. The package of the DC2 includes a plastic spatula that makes it rather easy to apply a very thin film of it over the CPU.
+</p>
+<p>
+Mounting the heat sink again was trivial compared to unmounting it. Just pushing down on the latch until it snapped into the retention module.
+</p>
+<p>
+With the CPU replaced, I mounted the mainboard into the case again, connected all wires (I had to check the mainboard manual for the front panel connector polarity), closed the case and started to connect the wires to the back of the PC again. When I reached the LAN cable, I noticed that I had messed up and had caught a metal plate between the LAN port and the case backplate, that blocked the port. So, I had to unscrew the mainboard once more, fix the connector plate's metal piece, and mount the board in the case again. On second attempt that worked out fine and I was finally able to boot the PC with the new CPU.
+</p>
+<h3>Firmware Settings</h3>
+<p>
+Since I don't plan on overclocking the CPU, I didn't need to touch the CPU settings at all. Just plug and play.
+</p>
+<p>
+I did go through all other settings of the mainbourd though, just to make sure everything is still as it should be, and it turned out that the firmware upgrade, while it didn't forget my boot configuration, had reset some other settings to their default values. For instance, the on-board serial and parallel ports were enabled again, even though they aren't physically accessible on my PC. Similarly, the USB configuration was set back to default.
+</p>
+<p>
+What also needed manual attention was the memory. After the CPU upgrade, all overclocking settings were reset to their defaults, and while my RAM, 2 sets of Corsair&nbsp;Vengeance&nbsp;CMK16GX4M2B3200C16, technically should support 1600&nbsp;MHz at timings of 16-18-18-32, that counts as overclocking, with the <acronym title="Serial Presence Detect">SPD</acronym> claiming that the RAM should be run at 1066&nbsp;MHz. I haven't been able to run the 4 <acronym title="Dual Inline Memory Module">DIMM</acronym>s at full speed on my old CPU (though with only 2 modules it worked), so I didn't expect that to work with the new CPU either. It still was a bit disappointing that the speed that I can use the memory at with the new CPU is unchanged compared to the old one. Right now I'm running the memory at 1400&nbsp;MHz, with 14-16-16-28 timings, and the system seems reasonably stable. I might try overclocking the memory further, in order to get it closer to the 1600&nbsp;MHz it should work at, but I'm not too optimistic that the results will be stable.
+</p>
+<h3>Conclusion</h3>
+<p>
+I didn't run any benchmarks yet, but I did recompile the <code>@system</code> set of packages, which includes gcc, on the new CPU. It felt a lot faster than previously. The memory clock rate is still a bit disappointing, and that might be a very last upgrade for this PC later, maybe going to 64&nbsp;GB using 2 modules of 32&nbsp;GB each. For now I'm happy with the impression that the computer is a lot faster than it was before.
+</p>
+<hr/>
+<h4 id="navigation">Navigation</h4>
+<p>
+<a href="/posts/2023-03/2023-03-11-adventures-with-free-monads-and-higher.xhtml">Previous: Adventures with Free Monads and higher</a>
+<a href="/index.xhtml">Home</a>
+</p>
+</body>
+</html>
