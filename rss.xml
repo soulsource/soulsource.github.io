@@ -1,4 +1,223 @@
-<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>Andi&apos;s Blog</title><link>https://www.grois.info</link><description>Blog that&apos;s mostly about tech stuff, but also random rambling</description><item><title>Upgrading from Zen 1 to Zen 3 with a B350M Mortar mainboard</title><link>https://www.grois.info/posts/2023-06/2023-06-24-upgrading-zen1-zen3-b350m-mortar.xhtml</link><description><![CDATA[<h2>Motivation</h2>
+<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>Andi&apos;s Blog</title><link>https://www.grois.info</link><description>Blog that&apos;s mostly about tech stuff, but also random rambling</description><item><title>Writer and State Monad in Rust, based on higher</title><link>https://www.grois.info/posts/2023-11/2023-11-19-writer-and-state-monad-in-rust-based-on-higher.xhtml</link><description><![CDATA[<h2 id="motivation">Motivation</h2>
+<p>
+As can for instance be seen in <a href="https://www.grois.info/posts/2023-03/2023-03-11-adventures-with-free-monads-and-higher.xhtml">my post about Free Monads</a>, working with Monads in Rust is not as straightforward as it is in languages with higher kinded types.  However, the relative success with Free Monads made me start a spare time game project that uses a Free Monad based <acronym title="embedded Domain Specific Language">eDSL</acronym> to describe the story flow.  I am planning to use the <a href="https://wiki.haskell.org/Monad#do-notation">do-notation</a> offered by the <a href="https://docs.rs/higher/latest/higher/macro.run.html"><code>run!{}</code></a> macro from the &quot;<a href="https://crates.io/crates/higher">higher</a>&quot; crate to build the story, but I've found that the <code>run!{}</code> macro has a rather annoying problem, namely that bindings created in it only really work for types that are <a href="https://doc.rust-lang.org/core/marker/trait.Copy.html"><code>Copy</code></a>.  While a pull request I made to <a href="https://github.com/bodil/higher/pull/7">add explicit clone support</a> has been merged, that is only a bandaid with terrible ergonomics.
+</p>
+<p>
+However, even with <code>Copy</code> types, it would be quite annoying to have to pass the game state along manually all the time. This is where the <a href="https://hackage.haskell.org/package/transformers-0.6.1.1/docs/Control-Monad-Trans-State-Lazy.html#t:StateT">State Monad Transformer</a> comes in. Within do-notation, it almost feels like mutable global state, even though nothing is global, and all computations are pure.
+</p>
+<p>
+In addition, I want to record all player choices since the last save-point. This is meant as a way to allow saving even in situations that normally would not. This sounds like a use case for a <a href="https://hackage.haskell.org/package/transformers-0.6.1.1/docs/Control-Monad-Trans-Writer-Lazy.html#t:WriterT">Writer Monad Transformer</a>, as building a list of things from within do-notation is one of its primary use cases.
+</p>
+<h2 id="writer">The Writer Monad Transformer</h2>
+<p>
+I started out with the Writer Monad Transformer first, because that was the first one I had thought about. My spare time project was at a point where the next logical step was to add savegame support, and, as said, I thought the Writer Monad Transformer could help me there.
+</p>
+<h3 id="lazy_writer_failure">An attempt was made: How to (not) implement a Writer Monad Transformer in Rust</h3>
+<p>
+I usually prefer simple over complex code, as this makes it easier to discuss it with others, and&nbsp;&ndash; just as important&nbsp;&ndash; get back to the code at some point in the future. That's why I at first attempted to directly port Haskell's <a href="https://hackage.haskell.org/package/transformers-0.6.1.1/docs/Control-Monad-Trans-Writer-Lazy.html#t:WriterT">Lazy Writer Monad Transformer</a>. (For the remainder of this blog post, if I talk about the &quot;Lazy Writer Monad Transformer&quot;, I mean the implementation that is lazy <em>in Haskell</em> - the Rust code shown below is very much <em>eager</em>.) Unlike the <acronym title="Continuation Passing Style">CPS</acronym> implementation of it, the lazy version is straightforward. It takes the wrapped Monad, and replaces its contents with a pair of the original content and an accumulator. Nothing special about it, right?
+</p>
+<p>
+Turns out, it's not that easy. Implementing <code>Functor</code> for it is straightforward enough:<br/>
+<code>
+struct WriterT&lt;M&gt;{<br/>
+&nbsp;&nbsp;run_writer_t : M<br/>
+}<br/>
+<br/>
+impl&lt;'a, A, M, W&gt; Functor&lt;'a, A&gt; for WriterT&lt;M&gt; where M : Functor&lt;'a, (A,W)&gt;{<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = WriterT&lt;M::Target&lt;(T, W)&gt;&gt;;<br/>
+&nbsp;&nbsp;fn map&lt;F&gt;(self, f : F) -&gt; Self::Target&lt;B&gt; where F : Fn(A)-&gt;B{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;let f = Rc::new(f); //lifetimes<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;WriterT{ run_writer_t :<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;self.run_writer_t.fmap(|(a,w)| (f(a), w))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+However, to be useful in do-notation, the type also needs to offer <a href="https://docs.rs/higher/latest/higher/trait.Bind.html"><code>Bind</code></a> and <a href="https://docs.rs/higher/latest/higher/trait.Pure.html"><code>Pure</code></a>. Here, however, a problem appears that (again) would require <a href="https://github.com/rust-lang/rust/issues/108185">Non-Lifetime Binders</a>. While there are many ways to express the required operation, they all need to somehow call a method on a <a href="https://blog.rust-lang.org/2022/10/28/gats-stabilization.html"><acronym title="Generic Associated Type">GAT</acronym></a>. For instance, it could look something like this:<br/>
+<code>
+impl&lt;'a, A, M ,W&gt; Bind&lt;'a, A&gt; for WriterT&lt;M&gt; where M : Bind&lt;'a, (A,W)&gt;, M : Clone, ???? {<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = WriterT&lt;M::Target&lt;(T, W)&gt;&gt;;<br/>
+&nbsp;&nbsp;fn bind&lt;F&gt;(self, f : F) -&gt; Self::Target&lt;B&gt; where F : Fn(A)-&gt;Self::Target&lt;B&gt; {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;let f = Rc::new(f); //lifetimes...<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;self.run_writer_t.bind(move |(a,w)| f(a).fmap(move |(b,ww)| (b, w.clone().mappend(ww))))<br/>
+&nbsp;&nbsp;}<br/>
+}<br/>
+</code>
+I'm writing this from memory, so this might not compile. In any case, it won't compile because of the missing trait bound, denoted by ????. What it would need to express would be that this trait implementation should only exist if <code>f(a)</code> is a <code>Functor</code>. Adding that trait bound to the <code>bind</code> method itself would be trivial. Adding it to the whole trait implementation would require Non-Lifetime binders. In this formulation it would even require a more advanced version of Non-Lifetime Binders, that would not only allow to express &quot;for all types B&quot;, but rather &quot;for all types B that are Sized&quot; due to the implicit <code>Sized</code> bound on <acronym title="Generic Associated Type">GAT</acronym>s.
+</p>
+<p>
+I was about to give up on a generic implementation at this point, but then I remembered that I had skimmed through an alternative implementation of the Writer Monad Transformer, that had a <code>Bind</code> implementation which has easier to express trait bounds, the <a href="https://hackage.haskell.org/package/transformers-0.6.1.1/docs/Control-Monad-Trans-Writer-CPS.html#t:WriterT"><acronym title="Continuation Passing Style">CPS</acronym> Writer Monad Transformer</a>. Originally I had ignored this version because it is a bit more complex than the lazy implementation, but given that the lazy implementation seems to be a dead end (in Stable Rust), I just had to give it a try.
+</p>
+<h3 id="cps_writer">Continuation Passing Style Writer Monad Transformer</h3>
+<p>
+Looking over <a href="https://hackage.haskell.org/package/transformers-0.6.1.1/docs/src/Control.Monad.Trans.Writer.CPS.html#WriterT">Haskell's source code for the <acronym title="Continuation Passing Style">CPS</acronym> Writer Monad Transformer</a> made me quite optimistic. <a href="https://docs.rs/higher/latest/higher/trait.Apply.html"><code>Apply</code></a> would likely not be implementable in a generic way, again because it would require Non-Lifetime Binders, but unlike <code>Bind</code>, <code>Apply</code> is not required to use do-notation. So, while the resulting type could not implement the <code>Apply</code>, <code>Applicative</code>, and, ultimately, the <code>Monad</code> type trait, that's not a problem for my use case. Also, technically, it would still qualify as a Monad. The requirement that <code>Monad</code> is a subtrait of <code>Apply</code> in higher is for historical, not technical reasons.
+</p>
+<p>
+The drawback of the <acronym title="Continuation Passing Style">CPS</acronym> version of <code>WriterT</code> is that it's lazy (this time also in Rust, not only Haskell). In addition, if the code should really be generic, it cannot make any assumptions about lifetimes, meaning that there will be boxed trait objects, shared references, and a lot of calls to <code>clone()</code>. Still, I was excited. In my use case the Writer was not going to end up in any hot path of the program. A few heap allocations and dynamic dispatch are quite an acceptable price at that point.
+</p>
+<p>
+The main building block for a Continuation-Passing Writer Monad Transformer is a data type that wraps a function, which maps an accumulator to a Monad that wraps a pair of said accumulator and another value. Haskell is rather explicit here:<br/>
+<code>
+	newtype WriterT w m a = WriterT { unWriterT :: w -&gt; m (a, w) }<br/>
+</code>
+In Rust we cannot express the term <code>m (a, w)</code> due to a lack of higher-kinded types. The best we can do is just M:<br/>
+<code>
+	struct WriterT&lt;'a, W, M&gt;{ un_writer_t : Box&lt;dyn Fn(W) -&gt; M + 'a&gt; }<br/>
+</code>
+I don't think that making this a boxed trait object is really necessary, it could probably just be a generic parameter.
+</p>
+<p>
+With this type, we can implement <code>Functor</code>, <code>Bind</code> and <code>Pure</code> rather easily. They only need to argue about the wrapped Monad <code>M</code>. <code>Bind</code> works, because instead of accessing the accumulator from the function call result, it can, in this formulation, simply pass the old accumulator as a parameter to it:<br/>
+<code>
+impl&lt;'a, A, W : 'a, M : 'a&gt; Functor&lt;'a,A&gt; for WriterT&lt;'a, W,M&gt; where M : Functor&lt;'a, (A, W)&gt;{<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = WriterT&lt;'a, W, M::Target&lt;(T,W)&gt;&gt;;<br/>
+&nbsp;&nbsp;fn fmap&lt;B, F&gt;(self, f: F) -&gt; Self::Target&lt;B&gt;<br/>
+&nbsp;&nbsp;where<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;F: Fn(A) -&gt; B + 'a {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;let f = Rc::new(f);<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;WriterT {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;un_writer_t: Box::new(move |w|{ let f = f.clone(); (self.un_writer_t)(w).fmap(move |(a, ww)| (f(a),ww))}),<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;}<br/>
+}<br/>
+<br/>
+impl&lt;'a, A, W : 'a, M : 'a&gt; Bind&lt;'a, A&gt; for WriterT&lt;'a, W, M&gt; where M : Bind&lt;'a, (A, W)&gt;{<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = WriterT&lt;'a, W, M::Target&lt;(T,W)&gt;&gt;;<br/>
+&nbsp;&nbsp;fn bind&lt;B, F&gt;(self, f: F) -&gt; Self::Target&lt;B&gt;<br/>
+&nbsp;&nbsp;where<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;F: Fn(A) -&gt; Self::Target&lt;B&gt; + 'a {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;let f = Rc::new(f);<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;WriterT{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;un_writer_t: Box::new(move |w|{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;let f = f.clone();<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;run!{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;old &lt;= (self.un_writer_t)(w);<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(f(old.0).un_writer_t)(old.1)<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;})<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;}<br/>
+}<br/>
+<br/>
+impl&lt;'a, A : 'a, W: 'a, M: 'a&gt; Pure&lt;A&gt; for WriterT&lt;'a, W, M&gt; where M : Pure&lt;(A,W)&gt;, A : Clone{<br/>
+&nbsp;&nbsp;fn pure(value: A) -&gt; Self {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;WriterT { un_writer_t: Box::new(move |w| M::pure((value.clone(),w))) }<br/>
+&nbsp;&nbsp;}<br/>
+}<br/>
+</code>
+</p>
+<p>
+Luckily, the functions to create a new <code>WriterT</code>, to unwrap the wrapped Monad, to add data to the accumulator, and to lift a command into the wrapped monad,can all be implemented as well:<br/>
+<code>
+impl&lt;'a, W: 'a, M: 'a&gt; WriterT&lt;'a, W, M&gt;{<br/>
+&nbsp;&nbsp;fn writer_t&lt;A&gt;(f : M) -&gt; Self where M : Functor&lt;'a,(A,W), Target&lt;(A, W)&gt; = M&gt; + Clone, W : Monoid + Clone{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;WriterT { un_writer_t: Box::new(move |w| {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;f.clone().fmap(move |(a, ww)| { (a, w.clone().mappend(ww)) })<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}) }<br/>
+&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;fn run_writer_t(&amp;self) -&gt; M where W : Default{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;(self.un_writer_t)(W::default())<br/>
+&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;fn lift&lt;N: 'a, A&gt;(m : N) -&gt; Self where N : Functor&lt;'a, A, Target&lt;(A,W)&gt; = M&gt; + Clone, W : Clone{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;WriterT { un_writer_t: Box::new(move |w|{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.clone().fmap(move |a| (a,w.clone()))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}) }<br/>
+&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;fn writer&lt;A : 'a&gt;((a,ww) : (A, W)) -&gt; Self where M : Pure&lt;(A,W)&gt;, W : Monoid + Clone, A : Clone {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;WriterT { un_writer_t: Box::new(move |w| M::pure((a.clone(), w.mappend(ww.clone())))) }<br/>
+&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;fn tell(w : W) -&gt; Self where M : Pure&lt;((),W)&gt;, W : Monoid + Clone{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;Self::writer(((),w))<br/>
+&nbsp;&nbsp;}<br/>
+}<br/>
+</code>
+</p>
+<p>
+The rest of the usual methods can be implemented as well, I won't repeat them here for brevity. The full source code with a small usage example can be found on this <a href="https://play.rust-lang.org/?version=stable&amp;mode=debug&amp;edition=2021&amp;gist=bbd995f7217fce269c593295bf83c261">Playground</a>. The code quality isn't too great, as this is more of a proof-of-concept than anything else. The Playground also contains the Writer Monad, which is just the Writer Monad Transformer wrapping the Identity Monad.
+</p>
+<h3 id="spare_time_project_usefulness">But wait, can I actually use this?</h3>
+<p>
+Now that the Writer Monad Transformer had been implemented, I realized something. It stores its accumulator in the Monad that it wraps. For a Free Monad this means, that the accumulator is stored within the <code>Pure</code> nodes, which form the leaves in the tree-like structure that the Free Monad forms. This means, that, if you get handed a Writer Monad Transformer that wraps a Free Monad, you need to traverse the whole structure, until the very end, in order to read the accumulator.
+</p>
+<p>
+You can already guess where this is going. In the context of a Free Monad based <acronym title="embedded Domain Specific Language">eDSL</acronym> for a game story, this means that the player needs to finish the game before the interpreter for the <acronym title="embedded Dmain Specific Language">eDSL</acronym> can actually access the accumulator, what makes it a bit unsuitable for a save-game system...
+</p>
+<p>
+While this setback made me rethink which part of my spare time project should actually be responsible for recording user input, and made me in the end decide against making this a part of the <acronym title="embedded Domain Specific Language">eDSL</acronym> and rather just let the interpreter do it, I am pretty sure that the idea would still be salvagable, if one really wanted to. The problem is that a Writer Monad Transformer that wraps a Free Monad does not yield the accumulator to an interpreter for intermediate steps. However, I think that a Free Monad Transformer that wraps a Writer Monad <em>would</em>.
+</p>
+<h2 id="state">The State Monad Transformer</h2>
+<p>
+The cool thing about the Continuation-Passing-Style Writer Monad Transformer is, that it is nearly identical to the State Monad Transformer. The difference is that the State Monad Transformer does not accumulate data into a <code>Monoid</code>, but instead gives read/write access to a single element.
+</p>
+<p>
+The similarities go so far, that <code>Functor</code>, <code>Pure</code> and <code>Bind</code> can be implemented identically. I won't repeat them here, just take the ones from the Writer Monad Transformer above, and replace <code>un_writer_t</code> by <code>run_state_t</code>.
+</p>
+<p>
+The <code>lift</code> associated function is different though, as for <code>StateT</code> it just replaces the stored data, instead of appending to it. Also, <code>StateT</code> has functions to <code>put</code> and <code>get</code> the state.
+</p>
+<p>
+<code>
+struct StateT&lt;'a, S, M&gt;{ run_state_t : Box&lt;dyn Fn(S)-&gt;M + 'a&gt; }<br/>
+impl&lt;'a, S: 'a, M: 'a&gt; StateT&lt;'a, S, M&gt;{<br/>
+&nbsp;&nbsp;fn lift&lt;N: 'a, A&gt;(m : N) -&gt; Self where N : Functor&lt;'a, A, Target&lt;(A,S)&gt; = M&gt; + Clone, S : Clone{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;StateT { run_state_t: Box::new(move |s|{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.clone().fmap(move |a| (a,s.clone()))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;}) }<br/>
+&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;fn get() -&gt; Self where M : Pure&lt;(S,S)&gt;, S : Clone{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;Self::state(|s| (s.clone(),s))<br/>
+&nbsp;&nbsp;}<br/>
+&nbsp;&nbsp;fn put(s : S) -&gt; Self where M: Pure&lt;((), S)&gt;, S : Clone{<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;Self::state(move |_| ((),s.clone()))<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+Of course there are more methods that can be implemented for the State Monad Transformer, these are just the bare minimum. You can have a look at this <a href="https://play.rust-lang.org/?version=stable&amp;mode=debug&amp;edition=2021&amp;gist=2472a59eec3e39f5722dd643d7111e7d">Playground</a> to see a few additional methods.
+</p>
+<h2 id="apply">But what about <code>Apply</code>?</h2>
+<p>
+The problem with <code>Apply</code> is that it requires a means to access the to-be-applied function. If we look at <a href="https://docs.rs/higher/latest/higher/trait.Apply.html">higher's <code>Apply</code> trait</a>, we can see that the type passed to the <code>apply</code> function is <code>&lt;Self as Apply&lt;'a, A&gt;&gt;::Target&lt;ApplyFn&lt;'a, A, B&gt;&gt;</code>. To get the contained <code>ApplyFn</code>, we would need to convince the compiler that this type is at least a <code>Functor</code>. However, we cannot argue about this type with the compiler when implementing <code>Apply</code>, because it depends on the type of <code>ApplyFn</code> passed to it by the caller. It's only available via a <acronym title="Generic Associated Type">GAT</acronym>, and does not exist in the <code>where</code> clause that we would need to write - similar to the problem encountered with <code>Bind</code> for the <a href="#lazy_writer_failure">Lazy Writer Monad Transformer</a>. Again, Non-Lifetime Binders could solve this problem. For now, we can implement <code>Apply</code> for a specialized State/Writer Monad Transformer though. For a known Monad Type, the compiler can actually check which traits <code>&lt;Self as Apply&lt;'a, A&gt;&gt;::Target&lt;ApplyFn&lt;'a, A, B&gt;&gt;</code> implements. For instance, for the <code>type OptionalWriter&lt;'a, W, A&gt; = WriterT&lt;'a, W, Option&lt;A&gt;&gt;;</code> the implementation is straightforward:
+</p>
+<p>
+<code>
+impl&lt;'a,A : 'a, W : 'a&gt; Apply&lt;'a,A&gt; for OptionalWriter&lt;'a,W,(A,W)&gt; where Self: Clone{<br/>
+&nbsp;&nbsp;type Target&lt;T&gt; = OptionalWriter&lt;'a,W,(T,W)&gt;<br/>
+&nbsp;&nbsp;where<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;T: 'a,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;A: 'a;<br/>
+&nbsp;&nbsp;fn apply&lt;B&gt;(<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;self,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;f: &lt;Self as Apply&lt;'a, A&gt;&gt;::Target&lt;higher::apply::ApplyFn&lt;'a, A, B&gt;&gt;,<br/>
+&nbsp;&nbsp;) -&gt; &lt;Self as Apply&lt;'a, A&gt;&gt;::Target&lt;B&gt;<br/>
+&nbsp;&nbsp;where<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;B: 'a {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;OptionalWriter{ un_writer_t: Box::new(move |w| {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;let u = self.clone().un_writer_t;<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(f.un_writer_t)(w).bind(move |(f,ww)| (u)(ww).fmap(move |(x,www)| (f.apply(x),www)))<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;})}<br/>
+&nbsp;&nbsp;}<br/>
+}
+</code>
+</p>
+<p>
+The <code>where</code> clause does not even mention <code>&lt;Self as Apply&lt;'a, A&gt;&gt;::Target&lt;ApplyFn&lt;'a, A, B&gt;&gt;</code> at all. The reason why this works, and the generic version does not, is that Rust does not enforce any constraints on <acronym title="Generic Associated Type">GAT</acronym>s. The result of <code>Functor::fmap()</code> need not be a <code>Functor</code> in general. For concrete Monad types the compiler can however check if this is the case, and if yes, use this information.
+</p>
+<h2 id="pattern_reuse">Can this pattern be used elsewhere?</h2>
+<p>
+Certainly. The Reader Monad Transformer comes to mind, obviously, since it can be implemented as a State Monad Transformer that simply doesn't allow to write and starts with an initial state. Other types that have similar structure can follow this pattern as well.
+</p>
+<p>
+Given that I did not yet manage to write a generic Free Monad in Stable Rust, I of course also checked if there is an implementation that follows a similar pattern. However, the closest I found was the <a href="https://hackage.haskell.org/package/free-5.2/docs/Control-Monad-Free-Church.html">Church Encoded Free Monad</a>, which requires the ability to compose generic functions, something that I don't think Rust supports. I'm still thinking about this problem, but haven't found a nice solution yet.
+</p>
+<h2 id="source_code">Will this be on Crates.io?</h2>
+<p>
+I'm not happy with the code quality that came out of this. So, no, I'm not planning to upload these types to crates.io. At least not any time soon. If you want to use them, just grab the two playground links above, and copy&amp;paste their contents. For documentation, check the Haskell docs for WriterT and StateT.
+</p>
+]]></description><guid>https://www.grois.info/posts/2023-11/2023-11-19-writer-and-state-monad-in-rust-based-on-higher.xhtml</guid><pubDate>Sun, 19 Nov 2023 00:00:00 +0000</pubDate></item><item><title>Upgrading from Zen 1 to Zen 3 with a B350M Mortar mainboard</title><link>https://www.grois.info/posts/2023-06/2023-06-24-upgrading-zen1-zen3-b350m-mortar.xhtml</link><description><![CDATA[<h2>Motivation</h2>
 <p>
 My home PC started to feel a bit dated this year, so over the last few months I started upgrading it.  The first upgrade was the GPU, where I went from an AMD&nbsp;Rx480 to an AMD&nbsp;RX&nbsp;6700&nbsp;XT. I won't go into details about that upgrade here, because once I get started talking about Linux GPU drivers, which where the main reason I bought an AMD card, I won't stop any more. Then, about a week ago, I finally got fed up with ending up in swapping hell every time I was compiling WebKit (and on Gentoo Linux that happens quite frequently...), so I bought another 16 GB of RAM, bringing the system to a total of 32 GB.
 </p>
